@@ -1,0 +1,12 @@
+## Interface: 120001
+## Title: LearnAlert
+## Notes: Displays a bouncing alert when there are mounts or toys in bags/bank that can be learned
+## Author: LearnAlert
+## Version: 1.0.0
+## SavedVariables: LearnAlertDB
+## X-Website: https://github.com/jbolduan/LearnAlert
+## X-Curse-Project-ID: 1482169
+## X-Wago-ID: qGZOJQNd
+## DefaultState: Enabled
+
+LearnAlert.lua

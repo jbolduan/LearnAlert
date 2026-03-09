@@ -1,0 +1,10 @@
+package-as: LearnAlert
+ignore:
+    - .github
+    - .vscode
+    - assets
+    - build
+    - .gitattributes
+    - .gitignore
+    - pkgmeta.yml
+    - README.md
