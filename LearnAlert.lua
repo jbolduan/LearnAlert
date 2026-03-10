@@ -369,6 +369,11 @@ end
 
 -- Determine whether an item is a housing decor item and if it's already known.
 local function IsDecorItem(itemID, itemClass, itemSubClass)
+    -- Housing dyes are consumable colorants, not learnable decor unlocks.
+    if itemSubClass and string.find(string.lower(itemSubClass), "dye", 1, true) then
+        return false
+    end
+
     -- Housing decor items are typically classified as "Miscellaneous" with specific subtypes
     -- The exact classification may vary by WoW version
     if itemSubClass == "Housing Decor" or itemSubClass == "Decoration" then
