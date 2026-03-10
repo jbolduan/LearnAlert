@@ -820,7 +820,7 @@ local function Initialize()
         ScheduleAlertUpdate(0)
     end)
     
-    PrintMessage("Loaded! Type /la or /learnaert for commands.")
+        PrintMessage("Loaded! Type /la or /learnalert for commands.")
 end
 
 -- List learnable items in chat
@@ -1286,8 +1286,8 @@ local function DebugBank()
 end
 
 -- Slash commands
-SLASH_LEARNAERT1 = "/learnaert"
-SLASH_LEARNAERT2 = "/la"
+SLASH_LEARNALERT1 = "/learnalert"
+SLASH_LEARNALERT2 = "/la"
 
 local function PrintCommandHelp()
     print("|cff00a0ff[LearnAlert] Commands:|r")
@@ -1307,7 +1307,7 @@ local function PrintCommandHelp()
     print("|cff888888Alert automatically checks for learnable mounts, toys, pets, and housing decor.|r")
 end
 
-SlashCmdList["LEARNAERT"] = function(msg)
+SlashCmdList["LEARNALERT"] = function(msg)
     local cmd = msg:match("^(%S*)") or ""
     cmd = cmd:lower()
     

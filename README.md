@@ -26,7 +26,7 @@ A World of Warcraft addon that opens a clickable list when there are mounts, toy
 
 | Command | Description |
 | ------- | ----------- |
-| `/la` or `/learnaert` | Show help |
+| `/la` or `/learnalert` | Show help |
 | `/la show` | Show the learnable-items list |
 | `/la hide` | Hide the learnable-items list |
 | `/la toggle` | Toggle the learnable-items list |
