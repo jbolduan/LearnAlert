@@ -38,6 +38,7 @@ A World of Warcraft addon that opens a clickable list when there are mounts, toy
 | `/la debugtoy` or `/la dt` | Show toy detection diagnostics for all items in bags |
 | `/la debugdecor` or `/la dd` | Show housing decor detection diagnostics for all items in bags |
 | `/la debugbank` or `/la db` | Show bank inventory and detection status (requires bank to be open) |
+| `/la debugclick` or `/la dc` | Toggle click payload debug logging for learnable-item rows (chat + copyable window) |
 
 ## Installation
 

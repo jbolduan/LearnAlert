@@ -14,6 +14,7 @@ local defaults = {
     alertX = 400,
     alertY = 100,
     verbose = false,
+    debugClicks = false,
     alertScale = 1.0,
     checkInterval = 2, -- Seconds between checks
 }
@@ -39,6 +40,9 @@ local isUpdateScheduled = false
 local isBankOpen = false
 ---@type GameTooltip
 local petScanTooltip = CreateFrame("GameTooltip", "LearnAlertPetScanTooltip", UIParent, "GameTooltipTemplate")
+local clickDebugFrame
+local clickDebugEditBox
+local clickDebugLines = {}
 
 -- Hidden tooltip owner for bag-item metadata parsing.
 petScanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
@@ -61,6 +65,96 @@ end
 local function PrintMessage(msg)
     if LearnAlertDB and LearnAlertDB.verbose then
         print("|cff00a0ff[LearnAlert]|r " .. msg)
+    end
+end
+
+local function EnsureClickDebugFrame()
+    if clickDebugFrame then
+        return clickDebugFrame
+    end
+
+    local frame = CreateFrame("Frame", "LearnAlertClickDebugFrame", UIParent, "BackdropTemplate")
+    frame:SetSize(760, 440)
+    frame:SetPoint("CENTER")
+    frame:SetFrameStrata("DIALOG")
+    frame:EnableMouse(true)
+    frame:SetClampedToScreen(true)
+    frame:SetMovable(true)
+    frame:Hide()
+
+    frame:SetBackdrop({
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 },
+    })
+    frame:SetBackdropColor(0, 0, 0, 0.95)
+
+    local titleBar = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+    titleBar:SetHeight(30)
+    titleBar:SetPoint("TOPLEFT", 0, 0)
+    titleBar:SetPoint("TOPRIGHT", 0, 0)
+    titleBar:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+    })
+    titleBar:SetBackdropColor(0.25, 0.35, 0.7, 1)
+    titleBar:EnableMouse(true)
+    titleBar:RegisterForDrag("LeftButton")
+    titleBar:SetScript("OnDragStart", function()
+        frame:StartMoving()
+    end)
+    titleBar:SetScript("OnDragStop", function()
+        frame:StopMovingOrSizing()
+    end)
+
+    local title = titleBar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("LEFT", 10, 0)
+    title:SetText("LearnAlert Click Debug Output")
+    title:SetTextColor(1, 1, 1)
+
+    local closeBtn = CreateFrame("Button", nil, titleBar, "UIPanelCloseButton")
+    closeBtn:SetPoint("RIGHT", -5, 0)
+    closeBtn:SetSize(24, 24)
+    closeBtn:SetScript("OnClick", function()
+        frame:Hide()
+    end)
+
+    local scrollFrame = CreateFrame("ScrollFrame", "LearnAlertClickDebugScrollFrame", frame, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, -40)
+    scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 10)
+
+    local editBox = CreateFrame("EditBox", nil, scrollFrame)
+    editBox:SetMultiLine(true)
+    editBox:SetWidth(700)
+    editBox:SetHeight(380)
+    editBox:SetFontObject(GameFontWhite)
+    editBox:SetAutoFocus(false)
+    editBox:SetScript("OnEscapePressed", function()
+        frame:Hide()
+    end)
+    scrollFrame:SetScrollChild(editBox)
+
+    clickDebugFrame = frame
+    clickDebugEditBox = editBox
+    return frame
+end
+
+local function AppendClickDebugOutput(msg)
+    table.insert(clickDebugLines, msg)
+    local text = table.concat(clickDebugLines, "\n")
+
+    local frame = EnsureClickDebugFrame()
+    if clickDebugEditBox then
+        clickDebugEditBox:SetText(text)
+        clickDebugEditBox:SetCursorPosition(0)
+    end
+    frame:Show()
+end
+
+local function PrintDebugClick(msg)
+    if LearnAlertDB and LearnAlertDB.debugClicks then
+        print("|cff00a0ff[LearnAlert]|r [debugclick] " .. msg)
+        AppendClickDebugOutput(msg)
     end
 end
 
@@ -166,12 +260,22 @@ local function GetSpeciesIDFromBagSlot(bag, slot, itemID, itemLink, itemName)
     if speciesID then
         return speciesID
     end
+    -- In WoW 12.x+, GetPetInfoByItemID returns the species name string instead of the species ID.
+    -- Use that name to resolve the species ID from the name cache.
+    if type(fallbackSpeciesID) == "string" and fallbackSpeciesID ~= "" then
+        speciesID = GetSpeciesIDFromItemName(fallbackSpeciesID)
+        if speciesID then
+            return speciesID
+        end
+    end
 
     -- Some cage links do not expose species in item links; tooltip data can.
     if C_TooltipInfo and C_TooltipInfo.GetBagItem then
         local tooltipData = C_TooltipInfo.GetBagItem(bag, slot)
         if tooltipData then
-            local tooltipSpeciesID = rawget(tooltipData, "battlePetSpeciesID")
+            -- battlePet.speciesID is the documented path; rawget is a legacy fallback.
+            local tooltipSpeciesID = (tooltipData.battlePet and tooltipData.battlePet.speciesID)
+                or rawget(tooltipData, "battlePetSpeciesID")
             if tooltipSpeciesID then
                 return tonumber(tooltipSpeciesID)
             end
@@ -302,8 +406,9 @@ local function GetBagItemContext(bag, slot, containerInfo)
     local itemName, itemLink, itemRarity, _, _, itemClass, itemSubClass, _, _, itemTexture = GetItemInfo(itemID)
     local bagItemLink = C_Container.GetContainerItemLink(bag, slot) or containerInfo.hyperlink or itemLink
 
-    if not itemClass or not itemSubClass then
+    if not itemClass or not itemSubClass or IsBattlePetClassItem(itemID) then
         -- Newly acquired items can be uncached for a short time.
+        -- Pet-class items also need full spell data for C_PetJournal.GetPetInfoByItemID to resolve species.
         C_Item.RequestLoadItemDataByID(itemID)
     end
 
@@ -339,6 +444,7 @@ local function BuildLearnableMountData(itemContext)
     return {
         itemID = itemContext.itemID,
         itemName = itemContext.itemName,
+        itemLink = itemContext.bagItemLink,
         itemTexture = itemContext.itemTexture,
         rarity = itemContext.itemRarity,
         mountID = mountID,
@@ -360,6 +466,7 @@ local function BuildLearnableToyData(itemContext)
     return {
         itemID = itemContext.itemID,
         itemName = itemContext.itemName,
+        itemLink = itemContext.bagItemLink,
         itemTexture = itemContext.itemTexture,
         rarity = itemContext.itemRarity,
         bag = itemContext.bag,
@@ -420,6 +527,7 @@ local function BuildLearnableDecorData(itemContext)
     return {
         itemID = itemContext.itemID,
         itemName = itemContext.itemName,
+        itemLink = itemContext.bagItemLink,
         itemTexture = itemContext.itemTexture,
         rarity = itemContext.itemRarity,
         isRepeatableDecor = true,
@@ -454,6 +562,7 @@ local function GetUncollectedPetData(bag, slot, itemID, itemLink, itemName, item
             return {
                 itemID = itemID,
                 itemName = speciesName or itemName,
+                itemLink = itemLink,
                 itemTexture = speciesIcon or itemTexture,
                 rarity = itemRarity,
                 speciesID = speciesID,
@@ -596,6 +705,20 @@ local function CreateItemButton(parent, index)
     
     -- Update cooldown when button is clicked
     button:HookScript("OnClick", function(self)
+        PrintDebugClick(string.format(
+            "Click row: itemID=%s bag=%s slot=%s mouseButton=%s attrType=%s attrType1=%s attrItem=%s attrItem1=%s macrotext=%s macrotext1=%s",
+            tostring(self.itemID),
+            tostring(self.bag),
+            tostring(self.slot),
+            tostring(GetMouseButtonClicked() or "nil"),
+            tostring(self:GetAttribute("type")),
+            tostring(self:GetAttribute("type1")),
+            tostring(self:GetAttribute("item")),
+            tostring(self:GetAttribute("item1")),
+            tostring(self:GetAttribute("macrotext")),
+            tostring(self:GetAttribute("macrotext1"))
+        ))
+
         -- Cooldown can start slightly after click; refresh immediately and with short retries.
         RefreshButtonCooldowns()
         C_Timer.After(0.03, RefreshButtonCooldowns)
@@ -628,20 +751,29 @@ local function UpdateButton(button, itemData, yOffset)
     button.icon:SetTexture(itemTexture or "Interface\\Icons\\INV_Misc_QuestionMark")
     button.text:SetText(itemName or itemData.itemName)
     
-    -- Bind to exact bag slot so duplicate names/items use the correct inventory entry.
+    -- Prefer exact bag-slot usage when available to mirror manual right-click behavior.
     if itemData.bag and itemData.slot then
-        button:SetAttribute("type", "macro")
-        button:SetAttribute("macrotext", string.format("/use %d %d", itemData.bag, itemData.slot))
+        button:SetAttribute("type", nil)
+        button:SetAttribute("item", nil)
+        button:SetAttribute("macrotext", nil)
+        button:SetAttribute("type1", "macro")
+        button:SetAttribute("macrotext1", string.format("/use %d %d", itemData.bag, itemData.slot))
+        button:SetAttribute("item1", nil)
         button:SetAttribute("item", nil)
     else
-        button:SetAttribute("type", "item")
+        button:SetAttribute("type", nil)
         button:SetAttribute("macrotext", nil)
-        if itemName then
-            button:SetAttribute("item", itemName)
+        button:SetAttribute("type1", "item")
+        button:SetAttribute("macrotext1", nil)
+        if itemData.itemLink then
+            button:SetAttribute("item1", itemData.itemLink)
+        elseif itemName then
+            button:SetAttribute("item1", itemName)
         else
-            -- Fallback to item ID if name not loaded yet
-            button:SetAttribute("item", "item:" .. itemData.itemID)
+            -- Fallback to item ID if name/link not loaded yet.
+            button:SetAttribute("item1", "item:" .. itemData.itemID)
         end
+        button:SetAttribute("item", nil)
     end
     
     -- Keep row inset symmetric with the right side (240 frame width - 220 button width = 20 total).
@@ -1032,6 +1164,19 @@ local function DebugPetScan()
             isPetClass and "YES" or "NO",
             speciesID and tostring(speciesID) or "nil",
             petStatus))
+        -- For unresolved pet-class items, show per-fallback diagnostics.
+        if isPetClass and not speciesID then
+            local rawSpeciesFromAPI = C_PetJournal.GetPetInfoByItemID(itemContext.itemID)
+            local _, _, _, _, _, classIDInfo = GetItemInfoInstant(itemContext.itemID)
+            BuildPetSpeciesNameCache()
+            local nameMatchIDs = petSpeciesByNameCache[itemContext.itemName or ""]
+            local apiNameMatchIDs = type(rawSpeciesFromAPI) == "string" and petSpeciesByNameCache[rawSpeciesFromAPI]
+            table.insert(output, string.format("  [DIAG] ClassID=%s  GetPetInfoByItemID=%s  NameCacheHits=%s  APINameHits=%s\n",
+                tostring(classIDInfo),
+                tostring(rawSpeciesFromAPI),
+                nameMatchIDs and tostring(#nameMatchIDs) or "0",
+                apiNameMatchIDs and tostring(#apiNameMatchIDs) or "0"))
+        end
         table.insert(output, "\n")
 
         itemCount = itemCount + 1
@@ -1307,6 +1452,7 @@ local function PrintCommandHelp()
     print("  /la debugtoy (/la dt) - Show detailed toy detection diagnostics")
     print("  /la debugdecor (/la dd) - Show detailed housing decor detection diagnostics")
     print("  /la debugbank (/la db) - Show bank inventory and detection status")
+    print("  /la debugclick (/la dc) - Toggle click payload debug logging (chat + copy window)")
     print("  /la help - Show this help")
     print(" ")
     print("|cff888888Alert automatically checks for learnable mounts, toys, pets, and housing decor.|r")
@@ -1382,6 +1528,10 @@ SlashCmdList["LEARNALERT"] = function(msg)
     
     elseif cmd == "debugbank" or cmd == "db" then
         DebugBank()
+
+    elseif cmd == "debugclick" or cmd == "dc" then
+        LearnAlertDB.debugClicks = not LearnAlertDB.debugClicks
+        print("|cff00a0ff[LearnAlert]|r Debug click logging: " .. (LearnAlertDB.debugClicks and "ON" or "OFF"))
         
     else
         print("|cffff0000[LearnAlert]|r Unknown command: " .. cmd)
