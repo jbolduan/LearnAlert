@@ -1,6 +1,6 @@
 --[[
-    LearnAlert - Displays bouncing alerts for learnable mounts, toys, battle pets, and housing decor
-    Detects mounts, toys, pets, and housing decor items in bags and bank that the character hasn't learned yet
+    LearnAlert - Displays bouncing alerts for learnable mounts, toys, follower curios, profession knowledge, battle pets, and housing decor
+    Detects mounts, toys, follower curios, profession knowledge, pets, and housing decor items in bags and bank that the character hasn't learned yet
     
     Uses floating bouncing text alerts with secure frames
 ]]
@@ -32,12 +32,14 @@ local ACCOUNTBANK_TAB_LAST = (Enum.BagIndex and Enum.BagIndex.AccountBankTab_5) 
 local alertFrame
 local buttonPool = {}
 local MAX_BUTTONS = 10
-local LEARNABLE_ITEM_ORDER = { "mounts", "toys", "pets", "decor" }
+local LEARNABLE_ITEM_ORDER = { "mounts", "toys", "curios", "knowledge", "pets", "decor" }
 local BATTLEPET_CLASS_ID = (Enum and Enum.ItemClass and Enum.ItemClass.Battlepet) or 17
 local PET_CAGE_ITEM_ID = 82800
 local PLAYER_HAS_DECOR_FN = rawget(_G, "PlayerHasDecor")
 local isUpdateScheduled = false
 local isBankOpen = false
+local curioItemCacheByID = {}
+local knowledgeItemCacheByID = {}
 ---@type GameTooltip
 local petScanTooltip = CreateFrame("GameTooltip", "LearnAlertPetScanTooltip", UIParent, "GameTooltipTemplate")
 local clickDebugFrame
@@ -348,6 +350,181 @@ local function GetToyKnownState(itemID)
     return nil
 end
 
+local function AddLowerTooltipTexts(textMap, tooltipData)
+    if not tooltipData or not tooltipData.lines then
+        return
+    end
+
+    for _, line in ipairs(tooltipData.lines) do
+        if line.leftText and line.leftText ~= "" then
+            textMap[string.lower(line.leftText)] = true
+        end
+
+        if line.rightText and line.rightText ~= "" then
+            textMap[string.lower(line.rightText)] = true
+        end
+
+        if line.text and line.text ~= "" then
+            textMap[string.lower(line.text)] = true
+        end
+
+        if line.args then
+            for _, arg in ipairs(line.args) do
+                if type(arg) == "table" then
+                    for _, value in pairs(arg) do
+                        if type(value) == "string" and value ~= "" then
+                            textMap[string.lower(value)] = true
+                        end
+                    end
+                elseif type(arg) == "string" and arg ~= "" then
+                    textMap[string.lower(arg)] = true
+                end
+            end
+        end
+    end
+end
+
+local function IsProfessionKnowledgeTooltipText(textMap)
+    local hasKnowledge = false
+    local hasUseLine = false
+
+    for text in pairs(textMap) do
+        if string.find(text, "knowledge", 1, true) then
+            hasKnowledge = true
+        end
+
+        if string.find(text, "use:", 1, true) or string.find(text, "use ", 1, true) then
+            hasUseLine = true
+        end
+
+        if string.find(text, "increase your", 1, true)
+            and string.find(text, "knowledge", 1, true) then
+            return true
+        end
+    end
+
+    return hasKnowledge and hasUseLine
+end
+
+local function IsFollowerCurioTooltipText(textMap)
+    local hasCurio = false
+    local hasFollower = false
+    local hasUseLine = false
+
+    for text in pairs(textMap) do
+        if string.find(text, "curio", 1, true) then
+            hasCurio = true
+        end
+
+        if string.find(text, "follower", 1, true) or string.find(text, "companion", 1, true) then
+            hasFollower = true
+        end
+
+        if string.find(text, "use:", 1, true) or string.find(text, "use ", 1, true) then
+            hasUseLine = true
+        end
+
+        if string.find(text, "follower curio", 1, true) then
+            return true
+        end
+    end
+
+    return hasCurio and hasFollower and hasUseLine
+end
+
+-- Determine whether an item is a follower curio.
+local function IsFollowerCurioItem(itemContext)
+    local cachedResult = curioItemCacheByID[itemContext.itemID]
+    if cachedResult ~= nil then
+        return cachedResult
+    end
+
+    local itemClassLower = itemContext.itemClass and string.lower(itemContext.itemClass) or ""
+    local itemSubClassLower = itemContext.itemSubClass and string.lower(itemContext.itemSubClass) or ""
+    local itemNameLower = itemContext.itemName and string.lower(itemContext.itemName) or ""
+
+    local isLikelyContainerType =
+        itemClassLower == "consumable"
+        or itemClassLower == "trade goods"
+        or itemClassLower == "miscellaneous"
+        or string.find(itemSubClassLower, "curio", 1, true)
+
+    if not isLikelyContainerType
+        and not string.find(itemNameLower, "curio", 1, true)
+        and not string.find(itemNameLower, "follower", 1, true) then
+        curioItemCacheByID[itemContext.itemID] = false
+        return false
+    end
+
+    local tooltipTexts = {}
+    if C_TooltipInfo then
+        if C_TooltipInfo.GetBagItem and itemContext.bag and itemContext.slot then
+            AddLowerTooltipTexts(tooltipTexts, C_TooltipInfo.GetBagItem(itemContext.bag, itemContext.slot))
+        end
+
+        if C_TooltipInfo.GetHyperlink then
+            local link = itemContext.bagItemLink or itemContext.itemLink or ("item:" .. itemContext.itemID)
+            AddLowerTooltipTexts(tooltipTexts, C_TooltipInfo.GetHyperlink(link))
+        end
+    end
+
+    local isCurio = IsFollowerCurioTooltipText(tooltipTexts)
+    if not isCurio
+        and string.find(itemNameLower, "curio", 1, true)
+        and (string.find(itemNameLower, "follower", 1, true) or string.find(itemNameLower, "brann", 1, true))
+        and isLikelyContainerType then
+        -- Name-based fallback for clients/tooltips that don't expose full use text yet.
+        isCurio = true
+    end
+
+    curioItemCacheByID[itemContext.itemID] = isCurio
+    return isCurio
+end
+
+-- Determine whether an item is a profession knowledge item.
+local function IsProfessionKnowledgeItem(itemContext)
+    local cachedResult = knowledgeItemCacheByID[itemContext.itemID]
+    if cachedResult ~= nil then
+        return cachedResult
+    end
+
+    local itemClassLower = itemContext.itemClass and string.lower(itemContext.itemClass) or ""
+    local itemSubClassLower = itemContext.itemSubClass and string.lower(itemContext.itemSubClass) or ""
+    local itemNameLower = itemContext.itemName and string.lower(itemContext.itemName) or ""
+
+    local isLikelyContainerType =
+        itemClassLower == "consumable"
+        or itemClassLower == "trade goods"
+        or itemClassLower == "miscellaneous"
+        or itemSubClassLower == "finishing reagents"
+
+    if not isLikelyContainerType and not string.find(itemNameLower, "knowledge", 1, true) then
+        knowledgeItemCacheByID[itemContext.itemID] = false
+        return false
+    end
+
+    local tooltipTexts = {}
+    if C_TooltipInfo then
+        if C_TooltipInfo.GetBagItem and itemContext.bag and itemContext.slot then
+            AddLowerTooltipTexts(tooltipTexts, C_TooltipInfo.GetBagItem(itemContext.bag, itemContext.slot))
+        end
+
+        if C_TooltipInfo.GetHyperlink then
+            local link = itemContext.bagItemLink or itemContext.itemLink or ("item:" .. itemContext.itemID)
+            AddLowerTooltipTexts(tooltipTexts, C_TooltipInfo.GetHyperlink(link))
+        end
+    end
+
+    local isKnowledge = IsProfessionKnowledgeTooltipText(tooltipTexts)
+    if not isKnowledge and string.find(itemNameLower, "knowledge", 1, true) and isLikelyContainerType then
+        -- Name-based fallback for clients/tooltips that don't expose full item use text yet.
+        isKnowledge = true
+    end
+
+    knowledgeItemCacheByID[itemContext.itemID] = isKnowledge
+    return isKnowledge
+end
+
 local function IterateBagItems(callback, includeBank)
     -- Scan regular bags (backpack + bag slots)
     for bag = 0, NUM_BAG_SLOTS do
@@ -474,6 +651,38 @@ local function BuildLearnableToyData(itemContext)
     }
 end
 
+local function BuildLearnableCurioData(itemContext)
+    if not IsFollowerCurioItem(itemContext) then
+        return nil
+    end
+
+    return {
+        itemID = itemContext.itemID,
+        itemName = itemContext.itemName,
+        itemLink = itemContext.bagItemLink,
+        itemTexture = itemContext.itemTexture,
+        rarity = itemContext.itemRarity,
+        bag = itemContext.bag,
+        slot = itemContext.slot,
+    }
+end
+
+local function BuildLearnableKnowledgeData(itemContext)
+    if not IsProfessionKnowledgeItem(itemContext) then
+        return nil
+    end
+
+    return {
+        itemID = itemContext.itemID,
+        itemName = itemContext.itemName,
+        itemLink = itemContext.bagItemLink,
+        itemTexture = itemContext.itemTexture,
+        rarity = itemContext.itemRarity,
+        bag = itemContext.bag,
+        slot = itemContext.slot,
+    }
+end
+
 -- Determine whether an item is a housing decor item and if it's already known.
 local function IsDecorItem(itemID, itemClass, itemSubClass)
     -- Housing dyes are consumable colorants, not learnable decor unlocks.
@@ -580,6 +789,8 @@ local function ScanForLearnableItems(includeBank)
     local learnableItems = {
         mounts = {},
         toys = {},
+        curios = {},
+        knowledge = {},
         pets = {},
         decor = {},
     }
@@ -604,6 +815,18 @@ local function ScanForLearnableItems(includeBank)
         if toyData then
             table.insert(learnableItems.toys, toyData)
             PrintMessage(string.format("  Found toy: %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+        end
+
+        local curioData = BuildLearnableCurioData(itemContext)
+        if curioData then
+            table.insert(learnableItems.curios, curioData)
+            PrintMessage(string.format("  Found follower curio: %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+        end
+
+        local knowledgeData = BuildLearnableKnowledgeData(itemContext)
+        if knowledgeData then
+            table.insert(learnableItems.knowledge, knowledgeData)
+            PrintMessage(string.format("  Found profession knowledge item: %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
         end
         
         local decorData = BuildLearnableDecorData(itemContext)
@@ -870,7 +1093,7 @@ local function UpdateAlert()
     end
     
     local items = ScanForLearnableItems(isBankOpen)
-    local totalCount = #items.mounts + #items.toys + #items.pets + #items.decor
+    local totalCount = #items.mounts + #items.toys + #items.curios + #items.knowledge + #items.pets + #items.decor
     
     if totalCount == 0 then
         alertFrame:Hide()
@@ -966,7 +1189,7 @@ local function ListLearnables()
     
     print("|cff00a0ff[LearnAlert]|r Learnable items:")
     
-    if #items.mounts == 0 and #items.toys == 0 and #items.pets == 0 and #items.decor == 0 then
+    if #items.mounts == 0 and #items.toys == 0 and #items.curios == 0 and #items.knowledge == 0 and #items.pets == 0 and #items.decor == 0 then
         print("  No learnable items found.")
         return
     end
@@ -982,6 +1205,20 @@ local function ListLearnables()
         print("|cffff00ffToys:|r")
         for _, toy in ipairs(items.toys) do
             print("  |cffffd700" .. toy.itemName .. "|r (ID: " .. toy.itemID .. ")")
+        end
+    end
+
+    if #items.curios > 0 then
+        print("|cff33ffaaFollower Curios:|r")
+        for _, curio in ipairs(items.curios) do
+            print("  |cffffd700" .. curio.itemName .. "|r (ID: " .. curio.itemID .. ")")
+        end
+    end
+
+    if #items.knowledge > 0 then
+        print("|cff66ccffProfession Knowledge:|r")
+        for _, knowledge in ipairs(items.knowledge) do
+            print("  |cffffd700" .. knowledge.itemName .. "|r (ID: " .. knowledge.itemID .. ")")
         end
     end
     
@@ -1239,6 +1476,72 @@ local function DebugToys()
     ShowDebugWindow("LearnAlert - Toy Debug", table.concat(output))
 end
 
+-- Detailed profession knowledge debugging to inspect metadata and tooltip matching.
+local function DebugKnowledge()
+    local output = {}
+    table.insert(output, "LearnAlert - Profession Knowledge Debug - ALL items in bags")
+    if isBankOpen then
+        table.insert(output, " and bank")
+    end
+    table.insert(output, "\n")
+    table.insert(output, string.format("C_TooltipInfo available: %s\n", C_TooltipInfo and "yes" or "no"))
+    table.insert(output, "\n")
+
+    local itemCount = 0
+
+    IterateBagItems(function(bag, slot, containerInfo)
+        local itemContext = GetBagItemContext(bag, slot, containerInfo)
+        local isKnowledge = IsProfessionKnowledgeItem(itemContext)
+        local cacheState = knowledgeItemCacheByID[itemContext.itemID]
+
+        table.insert(output, string.format("Bag%d Slot%d: %s (ID:%d)\n", bag, slot, itemContext.itemName or "?", itemContext.itemID))
+        table.insert(output, string.format("  Class='%s' SubClass='%s'\n", itemContext.itemClass or "nil", itemContext.itemSubClass or "nil"))
+        table.insert(output, string.format("  IsProfessionKnowledge=%s  Cache=%s\n",
+            isKnowledge and "YES" or "NO",
+            tostring(cacheState)))
+        table.insert(output, "\n")
+
+        itemCount = itemCount + 1
+    end, isBankOpen)
+
+    table.insert(output, string.format("\nTotal items scanned: %d", itemCount))
+
+    ShowDebugWindow("LearnAlert - Profession Knowledge Debug", table.concat(output))
+end
+
+-- Detailed follower curio debugging to inspect metadata and tooltip matching.
+local function DebugCurios()
+    local output = {}
+    table.insert(output, "LearnAlert - Follower Curio Debug - ALL items in bags")
+    if isBankOpen then
+        table.insert(output, " and bank")
+    end
+    table.insert(output, "\n")
+    table.insert(output, string.format("C_TooltipInfo available: %s\n", C_TooltipInfo and "yes" or "no"))
+    table.insert(output, "\n")
+
+    local itemCount = 0
+
+    IterateBagItems(function(bag, slot, containerInfo)
+        local itemContext = GetBagItemContext(bag, slot, containerInfo)
+        local isCurio = IsFollowerCurioItem(itemContext)
+        local cacheState = curioItemCacheByID[itemContext.itemID]
+
+        table.insert(output, string.format("Bag%d Slot%d: %s (ID:%d)\n", bag, slot, itemContext.itemName or "?", itemContext.itemID))
+        table.insert(output, string.format("  Class='%s' SubClass='%s'\n", itemContext.itemClass or "nil", itemContext.itemSubClass or "nil"))
+        table.insert(output, string.format("  IsFollowerCurio=%s  Cache=%s\n",
+            isCurio and "YES" or "NO",
+            tostring(cacheState)))
+        table.insert(output, "\n")
+
+        itemCount = itemCount + 1
+    end, isBankOpen)
+
+    table.insert(output, string.format("\nTotal items scanned: %d", itemCount))
+
+    ShowDebugWindow("LearnAlert - Follower Curio Debug", table.concat(output))
+end
+
 -- Detailed housing decor debugging to inspect item metadata and Housing API responses.
 local function DebugDecor()
     local output = {}
@@ -1316,6 +1619,8 @@ local function DebugBank()
                     -- Check detection status
                     local mountData = BuildLearnableMountData(itemContext)
                     local toyData = BuildLearnableToyData(itemContext)
+                    local curioData = BuildLearnableCurioData(itemContext)
+                    local knowledgeData = BuildLearnableKnowledgeData(itemContext)
                     local decorData = BuildLearnableDecorData(itemContext)
                     local isPetClass = IsBattlePetClassItem(itemContext.itemID)
                     local hasBattlePetLink = itemContext.bagItemLink and string.find(itemContext.bagItemLink, "battlepet:", 1, true)
@@ -1327,6 +1632,8 @@ local function DebugBank()
                     local detectionStatus = "None"
                     if mountData then detectionStatus = "MOUNT (learnable)"
                     elseif toyData then detectionStatus = "TOY (learnable)"
+                    elseif curioData then detectionStatus = "FOLLOWER CURIO (learnable)"
+                    elseif knowledgeData then detectionStatus = "PROFESSION KNOWLEDGE (learnable)"
                     elseif decorData then detectionStatus = "DECOR (learnable)"
                     elseif petData then detectionStatus = "PET (learnable)"
                     elseif isPetClass or hasBattlePetLink then detectionStatus = "Pet (already collected)"
@@ -1352,6 +1659,8 @@ local function DebugBank()
                 
                 local mountData = BuildLearnableMountData(itemContext)
                 local toyData = BuildLearnableToyData(itemContext)
+                local curioData = BuildLearnableCurioData(itemContext)
+                local knowledgeData = BuildLearnableKnowledgeData(itemContext)
                 local decorData = BuildLearnableDecorData(itemContext)
                 local isPetClass = IsBattlePetClassItem(itemContext.itemID)
                 local hasBattlePetLink = itemContext.bagItemLink and string.find(itemContext.bagItemLink, "battlepet:", 1, true)
@@ -1363,6 +1672,8 @@ local function DebugBank()
                 local detectionStatus = "None"
                 if mountData then detectionStatus = "MOUNT (learnable)"
                 elseif toyData then detectionStatus = "TOY (learnable)"
+                elseif curioData then detectionStatus = "FOLLOWER CURIO (learnable)"
+                elseif knowledgeData then detectionStatus = "PROFESSION KNOWLEDGE (learnable)"
                 elseif decorData then detectionStatus = "DECOR (learnable)"
                 elseif petData then detectionStatus = "PET (learnable)"
                 elseif isPetClass or hasBattlePetLink then detectionStatus = "Pet (already collected)"
@@ -1392,6 +1703,8 @@ local function DebugBank()
                     
                     local mountData = BuildLearnableMountData(itemContext)
                     local toyData = BuildLearnableToyData(itemContext)
+                    local curioData = BuildLearnableCurioData(itemContext)
+                    local knowledgeData = BuildLearnableKnowledgeData(itemContext)
                     local decorData = BuildLearnableDecorData(itemContext)
                     local isPetClass = IsBattlePetClassItem(itemContext.itemID)
                     local hasBattlePetLink = itemContext.bagItemLink and string.find(itemContext.bagItemLink, "battlepet:", 1, true)
@@ -1403,6 +1716,8 @@ local function DebugBank()
                     local detectionStatus = "None"
                     if mountData then detectionStatus = "MOUNT (learnable)"
                     elseif toyData then detectionStatus = "TOY (learnable)"
+                    elseif curioData then detectionStatus = "FOLLOWER CURIO (learnable)"
+                    elseif knowledgeData then detectionStatus = "PROFESSION KNOWLEDGE (learnable)"
                     elseif decorData then detectionStatus = "DECOR (learnable)"
                     elseif petData then detectionStatus = "PET (learnable)"
                     elseif isPetClass or hasBattlePetLink then detectionStatus = "Pet (already collected)"
@@ -1450,12 +1765,14 @@ local function PrintCommandHelp()
     print("  /la debugmount (/la dm) - Show mount detection diagnostics")
     print("  /la debugpet (/la dp) - Show detailed pet detection diagnostics")
     print("  /la debugtoy (/la dt) - Show detailed toy detection diagnostics")
+    print("  /la debugcurio (/la dcu) - Show detailed follower curio detection diagnostics")
+    print("  /la debugknowledge (/la dk) - Show detailed profession knowledge detection diagnostics")
     print("  /la debugdecor (/la dd) - Show detailed housing decor detection diagnostics")
     print("  /la debugbank (/la db) - Show bank inventory and detection status")
     print("  /la debugclick (/la dc) - Toggle click payload debug logging (chat + copy window)")
     print("  /la help - Show this help")
     print(" ")
-    print("|cff888888Alert automatically checks for learnable mounts, toys, pets, and housing decor.|r")
+    print("|cff888888Alert automatically checks for learnable mounts, toys, follower curios, profession knowledge items, pets, and housing decor.|r")
 end
 
 SlashCmdList["LEARNALERT"] = function(msg)
@@ -1501,10 +1818,12 @@ SlashCmdList["LEARNALERT"] = function(msg)
             
             local scanScope = isBankOpen and "bags and bank" or "bags only"
             PrintMessage(string.format(
-                "Checked %s: %d mount(s), %d toy(s), %d pet(s), %d decor learnable.",
+                "Checked %s: %d mount(s), %d toy(s), %d follower curio(s), %d profession knowledge item(s), %d pet(s), %d decor learnable.",
                 scanScope,
                 #items.mounts,
                 #items.toys,
+                #items.curios,
+                #items.knowledge,
                 #items.pets,
                 #items.decor
             ))
@@ -1522,6 +1841,12 @@ SlashCmdList["LEARNALERT"] = function(msg)
         
     elseif cmd == "debugtoy" or cmd == "dt" then
         DebugToys()
+
+    elseif cmd == "debugcurio" or cmd == "dcu" then
+        DebugCurios()
+
+    elseif cmd == "debugknowledge" or cmd == "dk" then
+        DebugKnowledge()
     
     elseif cmd == "debugdecor" or cmd == "dd" then
         DebugDecor()

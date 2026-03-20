@@ -1,12 +1,14 @@
 # LearnAlert
 
-A World of Warcraft addon that opens a clickable list when there are mounts, toys, battle pets, or housing decor items in your bags or bank that you can learn.
+A World of Warcraft addon that opens a clickable list when there are mounts, toys, follower curios, profession knowledge items, battle pets, or housing decor items in your bags or bank that you can use or learn.
 
 ## Features
 
 - **Clickable Learnable List**: Opens a clickable list of learnable items when items are found
 - **Mount Detection**: Automatically detects mounts in bags/bank that you haven't learned
 - **Toy Detection**: Automatically detects toys in bags/bank that you haven't collected
+- **Follower Curio Detection**: Automatically detects follower curio items in bags/bank
+- **Profession Knowledge Detection**: Automatically detects profession knowledge items in bags/bank
 - **Battle Pet Detection**: Automatically detects battle pets in bags/bank that you haven't collected
 - **Housing Decor Detection**: Automatically detects housing decor items in bags/bank that you haven't collected
 - **Bank Support**: Automatically scans character bank, reagent bank, and warbank when opened
@@ -18,7 +20,7 @@ A World of Warcraft addon that opens a clickable list when there are mounts, toy
 
 1. The addon automatically scans your bags every 2 seconds
 2. When you open your bank (character bank, reagent bank, or warbank), it automatically scans those containers too
-3. When it finds mounts, toys, battle pets, or housing decor items, it opens a clickable list
+3. When it finds mounts, toys, follower curios, profession knowledge items, battle pets, or housing decor items, it opens a clickable list
 4. Click an entry in the list to use and learn that item from its bag slot
 5. The list updates in real-time as items are learned or moved
 
@@ -36,6 +38,8 @@ A World of Warcraft addon that opens a clickable list when there are mounts, toy
 | `/la debugmount` or `/la dm` | Show mount detection diagnostics for all items in bags |
 | `/la debugpet` or `/la dp` | Show pet detection diagnostics for all items in bags |
 | `/la debugtoy` or `/la dt` | Show toy detection diagnostics for all items in bags |
+| `/la debugcurio` or `/la dcu` | Show follower curio detection diagnostics for all items in bags |
+| `/la debugknowledge` or `/la dk` | Show profession knowledge detection diagnostics for all items in bags |
 | `/la debugdecor` or `/la dd` | Show housing decor detection diagnostics for all items in bags |
 | `/la debugbank` or `/la db` | Show bank inventory and detection status (requires bank to be open) |
 | `/la debugclick` or `/la dc` | Toggle click payload debug logging for learnable-item rows (chat + copyable window) |
@@ -65,6 +69,8 @@ A World of Warcraft addon that opens a clickable list when there are mounts, toy
 
 - **Mounts**: Any mount item that can be learned by your character
 - **Toys**: Any toy item in the toy collection system
+- **Follower Curios**: Follower curio consumables and related items detected from tooltip/use text
+- **Profession Knowledge**: Profession knowledge consumables and related items detected from tooltip/use text
 - **Battle Pets**: Any caged battle pet that you haven't collected yet
 - **Housing Decor**: Any housing decor item (always shown as repeatable)
 
