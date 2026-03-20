@@ -1,5 +1,15 @@
 # Copilot Instructions for LearnAlert
 
+## Versioning
+
+The addon version is defined in the `## Version:` field of `LearnAlert.toc`. Use standard semantic versioning (`MAJOR.MINOR.PATCH`):
+
+- **PATCH** (`1.0.x`) - Bug fixes and minor corrections with no new functionality.
+- **MINOR** (`1.x.0`) - New features or item-type detection added in a backward-compatible way. Resets PATCH to 0.
+- **MAJOR** (`x.0.0`) - Breaking changes, major rewrites, or SavedVariables schema migrations that are not backward-compatible. Resets MINOR and PATCH to 0.
+
+When making any code change, increment the appropriate version component in `LearnAlert.toc` and update the version referenced in `README.md` if it appears there.
+
 ## Build and Deploy
 
 - **Never automatically execute `build\deploy.ps1`** - This script deploys files to the user's WoW installation and should only be run when explicitly requested by the user.

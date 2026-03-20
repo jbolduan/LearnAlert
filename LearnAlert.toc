@@ -2,7 +2,7 @@
 ## Title: LearnAlert
 ## Notes: Displays an alert when there are mounts, toys, follower curios, profession knowledge, pets, or decor items in bags/bank
 ## Author: Jeff Bolduan
-## Version: 1.0.4
+## Version: 1.0.5
 ## SavedVariables: LearnAlertDB
 ## X-Website: https://github.com/jbolduan/LearnAlert
 ## X-Curse-Project-ID: 1482169

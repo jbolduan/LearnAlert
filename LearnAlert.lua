@@ -443,11 +443,17 @@ local function IsFollowerCurioItem(itemContext)
     local itemSubClassLower = itemContext.itemSubClass and string.lower(itemContext.itemSubClass) or ""
     local itemNameLower = itemContext.itemName and string.lower(itemContext.itemName) or ""
 
+    -- If the game's own item subclass identifies it as a curio (e.g. "Utility Curio",
+    -- "Combat Curio"), that is a definitive signal — no tooltip heuristics needed.
+    if string.find(itemSubClassLower, "curio", 1, true) then
+        curioItemCacheByID[itemContext.itemID] = true
+        return true
+    end
+
     local isLikelyContainerType =
         itemClassLower == "consumable"
         or itemClassLower == "trade goods"
         or itemClassLower == "miscellaneous"
-        or string.find(itemSubClassLower, "curio", 1, true)
 
     if not isLikelyContainerType
         and not string.find(itemNameLower, "curio", 1, true)
