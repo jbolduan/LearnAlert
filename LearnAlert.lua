@@ -1,6 +1,6 @@
 --[[
-    LearnAlert - Displays bouncing alerts for learnable mounts, toys, follower curios, profession knowledge, battle pets, and housing decor
-    Detects mounts, toys, follower curios, profession knowledge, pets, and housing decor items in bags and bank that the character hasn't learned yet
+    LearnAlert - Displays bouncing alerts for learnable mounts, toys, transmog items, follower curios, profession knowledge, battle pets, and housing decor
+    Detects mounts, toys, transmog items, follower curios, profession knowledge, pets, and housing decor items in bags and bank that the character hasn't learned yet
     
     Uses floating bouncing text alerts with secure frames
 ]]
@@ -17,7 +17,81 @@ local defaults = {
     debugClicks = false,
     alertScale = 1.0,
     checkInterval = 2, -- Seconds between checks
+    ignoredItems = {}, -- Table of itemID -> true for items suppressed from the alert
+    -- Per-type detection toggles
+    detectMounts = true,
+    detectToys = true,
+    detectTransmog = true,
+    detectCurios = true,
+    detectKnowledge = true,
+    detectPets = true,
+    detectDecor = true,
 }
+
+-- Return true when itemID should be suppressed from the alert.
+local function IsItemIgnored(itemID)
+    return LearnAlertDB
+        and LearnAlertDB.ignoredItems
+        and LearnAlertDB.ignoredItems[itemID] == true
+end
+
+local refreshIgnoredItemsSettingsUI
+
+local function EnsureIgnoredItemsTable()
+    if not LearnAlertDB.ignoredItems then
+        LearnAlertDB.ignoredItems = {}
+    end
+end
+
+local function AddIgnoredItem(itemID)
+    itemID = tonumber(itemID)
+    if not itemID or itemID <= 0 or not LearnAlertDB then
+        return false
+    end
+
+    EnsureIgnoredItemsTable()
+    if LearnAlertDB.ignoredItems[itemID] then
+        return false
+    end
+
+    LearnAlertDB.ignoredItems[itemID] = true
+    if refreshIgnoredItemsSettingsUI then
+        refreshIgnoredItemsSettingsUI()
+    end
+
+    return true
+end
+
+local function RemoveIgnoredItem(itemID)
+    itemID = tonumber(itemID)
+    if not itemID or itemID <= 0 or not LearnAlertDB or not LearnAlertDB.ignoredItems then
+        return false
+    end
+
+    if not LearnAlertDB.ignoredItems[itemID] then
+        return false
+    end
+
+    LearnAlertDB.ignoredItems[itemID] = nil
+    if refreshIgnoredItemsSettingsUI then
+        refreshIgnoredItemsSettingsUI()
+    end
+
+    return true
+end
+
+local function GetSortedIgnoredItemIDs()
+    local ids = {}
+    if not LearnAlertDB or not LearnAlertDB.ignoredItems then
+        return ids
+    end
+
+    for itemID in pairs(LearnAlertDB.ignoredItems) do
+        table.insert(ids, itemID)
+    end
+    table.sort(ids)
+    return ids
+end
 
 -- Bank bag constants
 local BANK_CONTAINER_FIRST = 5
@@ -32,14 +106,19 @@ local ACCOUNTBANK_TAB_LAST = (Enum.BagIndex and Enum.BagIndex.AccountBankTab_5) 
 local alertFrame
 local buttonPool = {}
 local MAX_BUTTONS = 10
-local LEARNABLE_ITEM_ORDER = { "mounts", "toys", "curios", "knowledge", "pets", "decor" }
+local LEARNABLE_ITEM_ORDER = { "mounts", "toys", "transmog", "curios", "knowledge", "pets", "decor" }
 local BATTLEPET_CLASS_ID = (Enum and Enum.ItemClass and Enum.ItemClass.Battlepet) or 17
+local WEAPON_CLASS_ID = (Enum and Enum.ItemClass and Enum.ItemClass.Weapon) or 2
+local ARMOR_CLASS_ID = (Enum and Enum.ItemClass and Enum.ItemClass.Armor) or 4
 local PET_CAGE_ITEM_ID = 82800
 local PLAYER_HAS_DECOR_FN = rawget(_G, "PlayerHasDecor")
 local isUpdateScheduled = false
 local isBankOpen = false
+local learnAlertSettingsCategory
+local ScheduleAlertUpdate
 local curioItemCacheByID = {}
 local knowledgeItemCacheByID = {}
+local transmogItemCacheByLink = {}
 ---@type GameTooltip
 local petScanTooltip = CreateFrame("GameTooltip", "LearnAlertPetScanTooltip", UIParent, "GameTooltipTemplate")
 local clickDebugFrame
@@ -393,10 +472,11 @@ local function IsProfessionKnowledgeTooltipText(textMap)
             hasKnowledge = true
         end
 
-        if string.find(text, "use:", 1, true) or string.find(text, "use ", 1, true) then
+        if string.find(text, "use:", 1, true) then
             hasUseLine = true
         end
 
+        -- Fast path: a single line that says "increase your ... knowledge"
         if string.find(text, "increase your", 1, true)
             and string.find(text, "knowledge", 1, true) then
             return true
@@ -521,14 +601,197 @@ local function IsProfessionKnowledgeItem(itemContext)
         end
     end
 
-    local isKnowledge = IsProfessionKnowledgeTooltipText(tooltipTexts)
-    if not isKnowledge and string.find(itemNameLower, "knowledge", 1, true) and isLikelyContainerType then
-        -- Name-based fallback for clients/tooltips that don't expose full item use text yet.
-        isKnowledge = true
+    -- Exclude the item name from the textMap so that items whose names contain
+    -- "knowledge" (e.g. "Untapped Forbidden Knowledge") don't get false-positives.
+    if itemNameLower ~= "" then
+        tooltipTexts[itemNameLower] = nil
     end
+
+    local isKnowledge = IsProfessionKnowledgeTooltipText(tooltipTexts)
 
     knowledgeItemCacheByID[itemContext.itemID] = isKnowledge
     return isKnowledge
+end
+
+local function IsTooltipTokenPresent(textMap, token)
+    if not token or token == "" then
+        return false
+    end
+
+    return textMap[string.lower(token)] == true
+end
+
+local function IsAnyTooltipTokenPresent(textMap, tokenNames)
+    for _, tokenName in ipairs(tokenNames) do
+        local tokenValue = rawget(_G, tokenName)
+        if IsTooltipTokenPresent(textMap, tokenValue) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function IsPotentialTransmogItem(itemContext)
+    local itemNameLower = itemContext.itemName and string.lower(itemContext.itemName) or ""
+    if string.find(itemNameLower, "ensemble:", 1, true)
+        or string.find(itemNameLower, "arsenal:", 1, true) then
+        return true
+    end
+
+    local _, _, _, _, _, classID = GetItemInfoInstant(itemContext.itemID)
+    return classID == WEAPON_CLASS_ID or classID == ARMOR_CLASS_ID
+end
+
+local function IsTransmogTooltipText(textMap)
+    local unknownTokens = {
+        "TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNKNOWN",
+        "TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNUSABLE",
+        "TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNKNOWN_FAVORITE",
+        "TRANSMOGRIFY_TOOLTIP_ITEM_UNKNOWN_APPEARANCE_KNOWN",
+        "TRANSMOGRIFY_TOOLTIP_ITEM_UNKNOWN_APPEARANCE_KNOWN_FAVORITE",
+        "TRANSMOGRIFY_TOOLTIP_ITEM_UNKNOWN_APPEARANCE_UNKNOWN",
+        "TRANSMOGRIFY_TOOLTIP_ITEM_UNKNOWN_APPEARANCE_UNKNOWN_FAVORITE",
+    }
+
+    if IsAnyTooltipTokenPresent(textMap, unknownTokens) then
+        return true
+    end
+
+    local knownTokens = {
+        "TRANSMOGRIFY_TOOLTIP_APPEARANCE_KNOWN",
+        "TRANSMOGRIFY_TOOLTIP_APPEARANCE_KNOWN_FAVORITE",
+        "TRANSMOGRIFY_TOOLTIP_ITEM_KNOWN_APPEARANCE_KNOWN",
+        "TRANSMOGRIFY_TOOLTIP_ITEM_KNOWN_APPEARANCE_KNOWN_FAVORITE",
+    }
+
+    if IsAnyTooltipTokenPresent(textMap, knownTokens) then
+        return false
+    end
+
+    -- English fallback for clients where global tooltip constants are unavailable.
+    local hasAppearanceText = false
+    local hasUnknownText = false
+    local hasKnownText = false
+    for text in pairs(textMap) do
+        if string.find(text, "appearance", 1, true) then
+            hasAppearanceText = true
+        end
+
+        if string.find(text, "haven't collected", 1, true)
+            or string.find(text, "not collected", 1, true)
+            or string.find(text, "not yet collected", 1, true)
+            or string.find(text, "missing appearance", 1, true)
+            or string.find(text, "uncollected appearance", 1, true)
+            or string.find(text, "learn this appearance", 1, true) then
+            hasUnknownText = true
+        end
+
+        if string.find(text, "already known", 1, true)
+            or string.find(text, "already collected", 1, true)
+            or string.find(text, "known appearance", 1, true) then
+            hasKnownText = true
+        end
+    end
+
+    if hasKnownText then
+        return false
+    end
+
+    local hasSetContainerText = false
+    local hasCollectText = false
+    local hasPartialCollection = false
+    local hasCompleteCollection = false
+    local hasUncollectedText = false
+    for text in pairs(textMap) do
+        if string.find(text, "ensemble", 1, true) or string.find(text, "arsenal", 1, true) then
+            hasSetContainerText = true
+        end
+
+        if string.find(text, "collect", 1, true) or string.find(text, "collected", 1, true) then
+            hasCollectText = true
+
+            if string.find(text, "uncollected", 1, true) then
+                hasUncollectedText = true
+            end
+
+            local uncollectedCount = tonumber(string.match(text, "contains%s+(%d+)%s+uncollected"))
+            if uncollectedCount then
+                if uncollectedCount > 0 then
+                    hasPartialCollection = true
+                else
+                    hasCompleteCollection = true
+                end
+            end
+
+            -- Ensemble/arsenal tooltips commonly expose progress like "Collected: 5/8".
+            local collectedCount, totalCount = string.match(text, "(%d+)%s*/%s*(%d+)")
+            collectedCount = tonumber(collectedCount)
+            totalCount = tonumber(totalCount)
+            if collectedCount and totalCount and totalCount > 0 then
+                if collectedCount < totalCount then
+                    hasPartialCollection = true
+                elseif collectedCount >= totalCount then
+                    hasCompleteCollection = true
+                end
+            end
+        end
+    end
+
+    if hasPartialCollection then
+        return true
+    end
+
+    if hasCompleteCollection then
+        return false
+    end
+
+    if hasSetContainerText and hasUncollectedText then
+        return true
+    end
+
+    if hasSetContainerText and hasUnknownText then
+        return true
+    end
+
+    if hasSetContainerText and hasCollectText and hasKnownText then
+        return false
+    end
+
+    -- Some ensemble/arsenal tooltips only provide generic collect text and omit
+    -- explicit unknown markers. If there is no known/completed marker, treat as learnable.
+    if hasSetContainerText and hasCollectText and not hasKnownText and not hasCompleteCollection then
+        return true
+    end
+
+    return hasAppearanceText and hasUnknownText
+end
+
+local function IsLearnableTransmogItem(itemContext)
+    if not IsPotentialTransmogItem(itemContext) then
+        return false
+    end
+
+    local cacheKey = itemContext.bagItemLink or itemContext.itemLink or ("item:" .. itemContext.itemID)
+    local cachedResult = transmogItemCacheByLink[cacheKey]
+    if cachedResult ~= nil then
+        return cachedResult
+    end
+
+    local tooltipTexts = {}
+    if C_TooltipInfo then
+        if C_TooltipInfo.GetBagItem and itemContext.bag and itemContext.slot then
+            AddLowerTooltipTexts(tooltipTexts, C_TooltipInfo.GetBagItem(itemContext.bag, itemContext.slot))
+        end
+
+        if C_TooltipInfo.GetHyperlink then
+            AddLowerTooltipTexts(tooltipTexts, C_TooltipInfo.GetHyperlink(cacheKey))
+        end
+    end
+
+    local isLearnableTransmog = IsTransmogTooltipText(tooltipTexts)
+    transmogItemCacheByLink[cacheKey] = isLearnableTransmog
+    return isLearnableTransmog
 end
 
 local function IterateBagItems(callback, includeBank)
@@ -643,6 +906,22 @@ local function BuildLearnableToyData(itemContext)
 
     local isKnown = GetToyKnownState(itemContext.itemID)
     if isKnown == nil or isKnown then
+        return nil
+    end
+
+    return {
+        itemID = itemContext.itemID,
+        itemName = itemContext.itemName,
+        itemLink = itemContext.bagItemLink,
+        itemTexture = itemContext.itemTexture,
+        rarity = itemContext.itemRarity,
+        bag = itemContext.bag,
+        slot = itemContext.slot,
+    }
+end
+
+local function BuildLearnableTransmogData(itemContext)
+    if not IsLearnableTransmogItem(itemContext) then
         return nil
     end
 
@@ -795,6 +1074,7 @@ local function ScanForLearnableItems(includeBank)
     local learnableItems = {
         mounts = {},
         toys = {},
+        transmog = {},
         curios = {},
         knowledge = {},
         pets = {},
@@ -808,47 +1088,66 @@ local function ScanForLearnableItems(includeBank)
     local petsAdded = 0
     
     IterateBagItems(function(bag, slot, containerInfo)
+        if IsItemIgnored(containerInfo.itemID) then return end
         itemsScanned = itemsScanned + 1
         local itemContext = GetBagItemContext(bag, slot, containerInfo)
 
-        local mountData = BuildLearnableMountData(itemContext)
-        if mountData then
-            table.insert(learnableItems.mounts, mountData)
-            PrintMessage(string.format("  Found mount: %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+        if not LearnAlertDB or LearnAlertDB.detectMounts ~= false then
+            local mountData = BuildLearnableMountData(itemContext)
+            if mountData then
+                table.insert(learnableItems.mounts, mountData)
+                PrintMessage(string.format("  Found mount: %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+            end
         end
 
-        local toyData = BuildLearnableToyData(itemContext)
-        if toyData then
-            table.insert(learnableItems.toys, toyData)
-            PrintMessage(string.format("  Found toy: %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+        if not LearnAlertDB or LearnAlertDB.detectToys ~= false then
+            local toyData = BuildLearnableToyData(itemContext)
+            if toyData then
+                table.insert(learnableItems.toys, toyData)
+                PrintMessage(string.format("  Found toy: %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+            end
         end
 
-        local curioData = BuildLearnableCurioData(itemContext)
-        if curioData then
-            table.insert(learnableItems.curios, curioData)
-            PrintMessage(string.format("  Found follower curio: %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+        if not LearnAlertDB or LearnAlertDB.detectTransmog ~= false then
+            local transmogData = BuildLearnableTransmogData(itemContext)
+            if transmogData then
+                table.insert(learnableItems.transmog, transmogData)
+                PrintMessage(string.format("  Found transmog appearance item: %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+            end
         end
 
-        local knowledgeData = BuildLearnableKnowledgeData(itemContext)
-        if knowledgeData then
-            table.insert(learnableItems.knowledge, knowledgeData)
-            PrintMessage(string.format("  Found profession knowledge item: %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+        if not LearnAlertDB or LearnAlertDB.detectCurios ~= false then
+            local curioData = BuildLearnableCurioData(itemContext)
+            if curioData then
+                table.insert(learnableItems.curios, curioData)
+                PrintMessage(string.format("  Found follower curio: %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+            end
         end
-        
-        local decorData = BuildLearnableDecorData(itemContext)
-        if decorData then
-            table.insert(learnableItems.decor, decorData)
-            PrintMessage(string.format("  Found decor (repeatable): %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+
+        if not LearnAlertDB or LearnAlertDB.detectKnowledge ~= false then
+            local knowledgeData = BuildLearnableKnowledgeData(itemContext)
+            if knowledgeData then
+                table.insert(learnableItems.knowledge, knowledgeData)
+                PrintMessage(string.format("  Found profession knowledge item: %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+            end
+        end
+
+        if not LearnAlertDB or LearnAlertDB.detectDecor ~= false then
+            local decorData = BuildLearnableDecorData(itemContext)
+            if decorData then
+                table.insert(learnableItems.decor, decorData)
+                PrintMessage(string.format("  Found decor (repeatable): %s (Bag%d Slot%d)", itemContext.itemName or "?", bag, slot))
+            end
         end
 
         local isPetClassItem = IsBattlePetClassItem(itemContext.itemID)
         local hasBattlePetLink = itemContext.bagItemLink and string.find(itemContext.bagItemLink, "battlepet:", 1, true)
 
         -- Only run pet resolution for likely pet items to avoid heavy work while looting.
-        if isPetClassItem or hasBattlePetLink then
+        if (not LearnAlertDB or LearnAlertDB.detectPets ~= false) and (isPetClassItem or hasBattlePetLink) then
             petsChecked = petsChecked + 1
             PrintMessage(string.format("  Checking pet: %s (ID:%d, Bag%d Slot%d)", itemContext.itemName or "?", itemContext.itemID, bag, slot))
-            
+
             local petData = GetUncollectedPetData(
                 bag,
                 slot,
@@ -871,6 +1170,197 @@ local function ScanForLearnableItems(includeBank)
     PrintMessage(string.format("Scan complete: %d items, %d pets checked, %d learnable pets found", itemsScanned, petsChecked, petsAdded))
     
     return learnableItems
+end
+
+-- Register the addon's settings panel with WoW's built-in Settings UI.
+local function CreateSettingsPanel()
+    if not Settings or not Settings.RegisterVerticalLayoutCategory then
+        return
+    end
+
+    local category, layout = Settings.RegisterVerticalLayoutCategory("LearnAlert")
+
+    -- Helper: register a boolean proxy setting backed by LearnAlertDB and create its checkbox.
+    local function AddCheckbox(dbKey, displayName, tooltipText)
+        local setting = Settings.RegisterProxySetting(
+            category,
+            "LearnAlert_" .. dbKey,
+            Settings.VarType.Boolean,
+            displayName,
+            defaults[dbKey],
+            function()
+                return LearnAlertDB and LearnAlertDB[dbKey]
+            end,
+            function(value)
+                if LearnAlertDB then
+                    LearnAlertDB[dbKey] = value
+                    ScheduleAlertUpdate(0)
+                end
+            end
+        )
+        Settings.CreateCheckbox(category, setting, tooltipText)
+    end
+
+    -- Section: item-type detection toggles
+    if CreateSettingsListSectionHeaderInitializer then
+        layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Item Type Detection"))
+    end
+
+    AddCheckbox("detectMounts",    "Mounts",               "Detect learnable mount items in bags and bank.")
+    AddCheckbox("detectToys",      "Toys",                 "Detect uncollected toy items in bags and bank.")
+    AddCheckbox("detectTransmog",  "Transmog",             "Detect uncollected transmog appearances in bags and bank.")
+    AddCheckbox("detectCurios",    "Follower Curios",      "Detect follower curio items in bags and bank.")
+    AddCheckbox("detectKnowledge", "Profession Knowledge", "Detect profession knowledge items in bags and bank.")
+    AddCheckbox("detectPets",      "Battle Pets",          "Detect uncollected caged battle pets in bags and bank.")
+    AddCheckbox("detectDecor",     "Housing Decor",        "Detect housing decor items in bags and bank.")
+
+    if Settings.RegisterCanvasLayoutSubcategory then
+        local ignoredPanel = CreateFrame("Frame", "LearnAlertIgnoredItemsSettingsPanel", nil, "BackdropTemplate")
+        ignoredPanel:Hide()
+
+        local title = ignoredPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        title:SetPoint("TOPLEFT", 16, -16)
+        title:SetText("Ignored Items")
+
+        local helpText = ignoredPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        helpText:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+        helpText:SetText("Drag an item from your bags onto the drop box to ignore it. Use Remove to restore it.")
+
+        local dropBox = CreateFrame("Button", nil, ignoredPanel, "BackdropTemplate")
+        dropBox:SetSize(320, 38)
+        dropBox:SetPoint("TOPLEFT", helpText, "BOTTOMLEFT", 0, -10)
+        dropBox:SetBackdrop({
+            bgFile = "Interface\\Buttons\\WHITE8x8",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            edgeSize = 14,
+            insets = { left = 3, right = 3, top = 3, bottom = 3 },
+        })
+        dropBox:SetBackdropColor(0.08, 0.08, 0.08, 0.9)
+        dropBox:SetBackdropBorderColor(0.45, 0.45, 0.45, 1)
+
+        local dropLabel = dropBox:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        dropLabel:SetPoint("CENTER")
+        dropLabel:SetText("Drop Bag Item Here To Ignore")
+
+        local listHeader = ignoredPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        listHeader:SetPoint("TOPLEFT", dropBox, "BOTTOMLEFT", 0, -14)
+        listHeader:SetText("Ignored Item List")
+
+        local scrollFrame = CreateFrame("ScrollFrame", nil, ignoredPanel, "UIPanelScrollFrameTemplate")
+        scrollFrame:SetPoint("TOPLEFT", listHeader, "BOTTOMLEFT", 0, -8)
+        scrollFrame:SetPoint("BOTTOMRIGHT", ignoredPanel, "BOTTOMRIGHT", -30, 14)
+
+        local listContent = CreateFrame("Frame", nil, scrollFrame)
+        listContent:SetSize(560, 1)
+        scrollFrame:SetScrollChild(listContent)
+        scrollFrame:SetScript("OnSizeChanged", function(self, width)
+            listContent:SetWidth(math.max(1, width - 26))
+        end)
+
+        local emptyText = listContent:CreateFontString(nil, "OVERLAY", "GameFontDisable")
+        emptyText:SetPoint("TOPLEFT", 0, 0)
+        emptyText:SetText("No ignored items yet.")
+
+        local rowPool = {}
+        local rowHeight = 24
+
+        local function CreateRow(index)
+            local row = CreateFrame("Frame", nil, listContent)
+            row:SetHeight(rowHeight)
+            row:SetPoint("TOPLEFT", 0, -((index - 1) * rowHeight))
+            row:SetPoint("TOPRIGHT", -6, -((index - 1) * rowHeight))
+
+            row.icon = row:CreateTexture(nil, "ARTWORK")
+            row.icon:SetSize(18, 18)
+            row.icon:SetPoint("LEFT", 2, 0)
+
+            row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            row.text:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
+            row.text:SetPoint("RIGHT", -70, 0)
+            row.text:SetJustifyH("LEFT")
+
+            row.removeButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+            row.removeButton:SetSize(62, 20)
+            row.removeButton:SetPoint("RIGHT", -2, 0)
+            row.removeButton:SetText("Remove")
+            row.removeButton:SetScript("OnClick", function(self)
+                local itemID = self:GetParent().itemID
+                if RemoveIgnoredItem(itemID) then
+                    local itemName = GetItemInfo(itemID) or ("Item " .. itemID)
+                    print(string.format("|cff00a0ff[LearnAlert]|r No longer ignoring |cff888888%s|r.", itemName))
+                    ScheduleAlertUpdate(0)
+                end
+            end)
+
+            row:Hide()
+            return row
+        end
+
+        local function RefreshIgnoredRows()
+            local ignoredIDs = GetSortedIgnoredItemIDs()
+            emptyText:SetShown(#ignoredIDs == 0)
+
+            for index, itemID in ipairs(ignoredIDs) do
+                local row = rowPool[index]
+                if not row then
+                    row = CreateRow(index)
+                    rowPool[index] = row
+                end
+
+                local itemName, itemLink, _, _, _, _, _, _, _, itemTexture = GetItemInfo(itemID)
+                row.itemID = itemID
+                row.icon:SetTexture(itemTexture or "Interface\\Icons\\INV_Misc_QuestionMark")
+                if itemLink then
+                    row.text:SetText(string.format("%s |cff888888(ID: %d)|r", itemLink, itemID))
+                else
+                    row.text:SetText(string.format("%s |cff888888(ID: %d)|r", itemName or "Unknown", itemID))
+                end
+                row:Show()
+            end
+
+            for index = #ignoredIDs + 1, #rowPool do
+                rowPool[index]:Hide()
+            end
+
+            listContent:SetHeight(math.max(1, #ignoredIDs * rowHeight))
+        end
+
+        local function TryAddIgnoredFromCursor()
+            local cursorType, itemID = GetCursorInfo()
+            if cursorType ~= "item" or not itemID then
+                return
+            end
+
+            ClearCursor()
+            if AddIgnoredItem(itemID) then
+                local itemName = GetItemInfo(itemID) or ("Item " .. itemID)
+                print(string.format("|cff00a0ff[LearnAlert]|r Ignoring |cff888888%s|r.", itemName))
+                ScheduleAlertUpdate(0)
+            else
+                print("|cff00a0ff[LearnAlert]|r That item is already ignored.")
+            end
+        end
+
+        dropBox:SetScript("OnReceiveDrag", TryAddIgnoredFromCursor)
+        dropBox:SetScript("OnMouseUp", function(_, mouseButton)
+            if mouseButton == "LeftButton" or mouseButton == "RightButton" then
+                TryAddIgnoredFromCursor()
+            end
+        end)
+
+        ignoredPanel:SetScript("OnShow", RefreshIgnoredRows)
+        refreshIgnoredItemsSettingsUI = RefreshIgnoredRows
+
+        local ignoredSubcategory = Settings.RegisterCanvasLayoutSubcategory(category, ignoredPanel, "Ignored Items")
+        if ignoredSubcategory then
+            Settings.RegisterAddOnCategory(ignoredSubcategory)
+        end
+
+        ignoredPanel:Hide()
+    end
+
+    Settings.RegisterAddOnCategory(category)
+    learnAlertSettingsCategory = category
 end
 
 -- Create a clickable item button
@@ -924,6 +1414,7 @@ local function CreateItemButton(parent, index)
             end
             GameTooltip:AddLine(" ")
             GameTooltip:AddLine("|cff00ff00Click to learn|r", 1, 1, 1)
+            GameTooltip:AddLine("|cff888888Right-click to ignore|r", 1, 1, 1)
             GameTooltip:Show()
         end
     end)
@@ -934,6 +1425,20 @@ local function CreateItemButton(parent, index)
     
     -- Update cooldown when button is clicked
     button:HookScript("OnClick", function(self)
+        local mouseBtn = GetMouseButtonClicked()
+        if mouseBtn == "RightButton" then
+            if self.itemID and not InCombatLockdown() then
+                local wasAdded = AddIgnoredItem(self.itemID)
+                local itemName = GetItemInfo(self.itemID) or ("Item " .. self.itemID)
+                if wasAdded then
+                    print(string.format("|cff00a0ff[LearnAlert]|r Ignoring |cff888888%s|r. Type /la unignore %d to restore.", itemName, self.itemID))
+                    ScheduleAlertUpdate(0)
+                else
+                    print(string.format("|cff00a0ff[LearnAlert]|r |cff888888%s|r is already ignored.", itemName))
+                end
+            end
+            return
+        end
         PrintDebugClick(string.format(
             "Click row: itemID=%s bag=%s slot=%s mouseButton=%s attrType=%s attrType1=%s attrItem=%s attrItem1=%s macrotext=%s macrotext1=%s",
             tostring(self.itemID),
@@ -1099,7 +1604,7 @@ local function UpdateAlert()
     end
     
     local items = ScanForLearnableItems(isBankOpen)
-    local totalCount = #items.mounts + #items.toys + #items.curios + #items.knowledge + #items.pets + #items.decor
+    local totalCount = #items.mounts + #items.toys + #items.transmog + #items.curios + #items.knowledge + #items.pets + #items.decor
     
     if totalCount == 0 then
         alertFrame:Hide()
@@ -1143,7 +1648,7 @@ local function UpdateAlert()
 end
 
 -- Coalesce bursts of bag/item events into a single update.
-local function ScheduleAlertUpdate(delaySeconds)
+ScheduleAlertUpdate = function(delaySeconds)
     if isUpdateScheduled then
         return
     end
@@ -1172,7 +1677,8 @@ local function Initialize()
     
     -- Create UI
     alertFrame = CreateAlertFrame()
-    
+    CreateSettingsPanel()
+
     -- Create button pool
     for i = 1, MAX_BUTTONS do
         buttonPool[i] = CreateItemButton(alertFrame, i)
@@ -1195,7 +1701,7 @@ local function ListLearnables()
     
     print("|cff00a0ff[LearnAlert]|r Learnable items:")
     
-    if #items.mounts == 0 and #items.toys == 0 and #items.curios == 0 and #items.knowledge == 0 and #items.pets == 0 and #items.decor == 0 then
+    if #items.mounts == 0 and #items.toys == 0 and #items.transmog == 0 and #items.curios == 0 and #items.knowledge == 0 and #items.pets == 0 and #items.decor == 0 then
         print("  No learnable items found.")
         return
     end
@@ -1211,6 +1717,13 @@ local function ListLearnables()
         print("|cffff00ffToys:|r")
         for _, toy in ipairs(items.toys) do
             print("  |cffffd700" .. toy.itemName .. "|r (ID: " .. toy.itemID .. ")")
+        end
+    end
+
+    if #items.transmog > 0 then
+        print("|cff66ff66Transmog:|r")
+        for _, transmog in ipairs(items.transmog) do
+            print("  |cffffd700" .. transmog.itemName .. "|r (ID: " .. transmog.itemID .. ")")
         end
     end
 
@@ -1482,6 +1995,81 @@ local function DebugToys()
     ShowDebugWindow("LearnAlert - Toy Debug", table.concat(output))
 end
 
+-- Detailed transmog debugging to inspect metadata and tooltip matching.
+local function DebugTransmog()
+    local output = {}
+    table.insert(output, "LearnAlert - Transmog Debug - ALL items in bags")
+    if isBankOpen then
+        table.insert(output, " and bank")
+    end
+    table.insert(output, "\n")
+    table.insert(output, string.format("C_TooltipInfo available: %s\n", C_TooltipInfo and "yes" or "no"))
+    table.insert(output, string.format("C_TransmogCollection available: %s\n", C_TransmogCollection and "yes" or "no"))
+    table.insert(output, "\n")
+
+    local itemCount = 0
+
+    IterateBagItems(function(bag, slot, containerInfo)
+        local itemContext = GetBagItemContext(bag, slot, containerInfo)
+
+        local isCandidate = IsPotentialTransmogItem(itemContext)
+        local isLearnable = IsLearnableTransmogItem(itemContext)
+        local cacheKey = itemContext.bagItemLink or itemContext.itemLink or ("item:" .. itemContext.itemID)
+        local cacheState = transmogItemCacheByLink[cacheKey]
+        local tooltipTexts = {}
+
+        if C_TooltipInfo then
+            if C_TooltipInfo.GetBagItem and itemContext.bag and itemContext.slot then
+                AddLowerTooltipTexts(tooltipTexts, C_TooltipInfo.GetBagItem(itemContext.bag, itemContext.slot))
+            end
+
+            if C_TooltipInfo.GetHyperlink then
+                AddLowerTooltipTexts(tooltipTexts, C_TooltipInfo.GetHyperlink(cacheKey))
+            end
+        end
+
+        table.insert(output, string.format("Bag%d Slot%d: %s (ID:%d)\n", bag, slot, itemContext.itemName or "?", itemContext.itemID))
+        table.insert(output, string.format("  Class='%s' SubClass='%s'\n", itemContext.itemClass or "nil", itemContext.itemSubClass or "nil"))
+        table.insert(output, string.format("  IsTransmogCandidate=%s  IsLearnableTransmog=%s  Cache=%s\n",
+            isCandidate and "YES" or "NO",
+            isLearnable and "YES" or "NO",
+            tostring(cacheState)))
+
+        local itemNameLower = itemContext.itemName and string.lower(itemContext.itemName) or ""
+        if string.find(itemNameLower, "ensemble:", 1, true)
+            or string.find(itemNameLower, "arsenal:", 1, true) then
+            local tooltipLines = {}
+            for text in pairs(tooltipTexts) do
+                if string.find(text, "collect", 1, true)
+                    or string.find(text, "appearance", 1, true)
+                    or string.find(text, "ensemble", 1, true)
+                    or string.find(text, "arsenal", 1, true)
+                    or string.match(text, "%d+%s*/%s*%d+") then
+                    table.insert(tooltipLines, text)
+                end
+            end
+
+            table.sort(tooltipLines)
+            if #tooltipLines > 0 then
+                table.insert(output, "  Tooltip transmog lines:\n")
+                for _, lineText in ipairs(tooltipLines) do
+                    table.insert(output, string.format("    - %s\n", lineText))
+                end
+            else
+                table.insert(output, "  Tooltip transmog lines: [none matched]\n")
+            end
+        end
+
+        table.insert(output, "\n")
+
+        itemCount = itemCount + 1
+    end, isBankOpen)
+
+    table.insert(output, string.format("\nTotal items scanned: %d", itemCount))
+
+    ShowDebugWindow("LearnAlert - Transmog Debug", table.concat(output))
+end
+
 -- Detailed profession knowledge debugging to inspect metadata and tooltip matching.
 local function DebugKnowledge()
     local output = {}
@@ -1625,6 +2213,7 @@ local function DebugBank()
                     -- Check detection status
                     local mountData = BuildLearnableMountData(itemContext)
                     local toyData = BuildLearnableToyData(itemContext)
+                    local transmogData = BuildLearnableTransmogData(itemContext)
                     local curioData = BuildLearnableCurioData(itemContext)
                     local knowledgeData = BuildLearnableKnowledgeData(itemContext)
                     local decorData = BuildLearnableDecorData(itemContext)
@@ -1638,6 +2227,7 @@ local function DebugBank()
                     local detectionStatus = "None"
                     if mountData then detectionStatus = "MOUNT (learnable)"
                     elseif toyData then detectionStatus = "TOY (learnable)"
+                    elseif transmogData then detectionStatus = "TRANSMOG (learnable)"
                     elseif curioData then detectionStatus = "FOLLOWER CURIO (learnable)"
                     elseif knowledgeData then detectionStatus = "PROFESSION KNOWLEDGE (learnable)"
                     elseif decorData then detectionStatus = "DECOR (learnable)"
@@ -1665,6 +2255,7 @@ local function DebugBank()
                 
                 local mountData = BuildLearnableMountData(itemContext)
                 local toyData = BuildLearnableToyData(itemContext)
+                local transmogData = BuildLearnableTransmogData(itemContext)
                 local curioData = BuildLearnableCurioData(itemContext)
                 local knowledgeData = BuildLearnableKnowledgeData(itemContext)
                 local decorData = BuildLearnableDecorData(itemContext)
@@ -1678,6 +2269,7 @@ local function DebugBank()
                 local detectionStatus = "None"
                 if mountData then detectionStatus = "MOUNT (learnable)"
                 elseif toyData then detectionStatus = "TOY (learnable)"
+                elseif transmogData then detectionStatus = "TRANSMOG (learnable)"
                 elseif curioData then detectionStatus = "FOLLOWER CURIO (learnable)"
                 elseif knowledgeData then detectionStatus = "PROFESSION KNOWLEDGE (learnable)"
                 elseif decorData then detectionStatus = "DECOR (learnable)"
@@ -1709,6 +2301,7 @@ local function DebugBank()
                     
                     local mountData = BuildLearnableMountData(itemContext)
                     local toyData = BuildLearnableToyData(itemContext)
+                    local transmogData = BuildLearnableTransmogData(itemContext)
                     local curioData = BuildLearnableCurioData(itemContext)
                     local knowledgeData = BuildLearnableKnowledgeData(itemContext)
                     local decorData = BuildLearnableDecorData(itemContext)
@@ -1722,6 +2315,7 @@ local function DebugBank()
                     local detectionStatus = "None"
                     if mountData then detectionStatus = "MOUNT (learnable)"
                     elseif toyData then detectionStatus = "TOY (learnable)"
+                    elseif transmogData then detectionStatus = "TRANSMOG (learnable)"
                     elseif curioData then detectionStatus = "FOLLOWER CURIO (learnable)"
                     elseif knowledgeData then detectionStatus = "PROFESSION KNOWLEDGE (learnable)"
                     elseif decorData then detectionStatus = "DECOR (learnable)"
@@ -1771,14 +2365,19 @@ local function PrintCommandHelp()
     print("  /la debugmount (/la dm) - Show mount detection diagnostics")
     print("  /la debugpet (/la dp) - Show detailed pet detection diagnostics")
     print("  /la debugtoy (/la dt) - Show detailed toy detection diagnostics")
+    print("  /la debugtransmog (/la dtr) - Show detailed transmog detection diagnostics")
     print("  /la debugcurio (/la dcu) - Show detailed follower curio detection diagnostics")
     print("  /la debugknowledge (/la dk) - Show detailed profession knowledge detection diagnostics")
     print("  /la debugdecor (/la dd) - Show detailed housing decor detection diagnostics")
     print("  /la debugbank (/la db) - Show bank inventory and detection status")
     print("  /la debugclick (/la dc) - Toggle click payload debug logging (chat + copy window)")
+    print("  /la settings - Open the LearnAlert settings panel")
+    print("  /la ignorelist (/la il) - List all ignored items")
+    print("  /la unignore <id> (/la ui <id>) - Remove an item from the ignore list")
+    print("  /la clearignored (/la ci) - Clear all ignored items")
     print("  /la help - Show this help")
     print(" ")
-    print("|cff888888Alert automatically checks for learnable mounts, toys, follower curios, profession knowledge items, pets, and housing decor.|r")
+    print("|cff888888Alert automatically checks for learnable mounts, toys, transmog items, follower curios, profession knowledge items, pets, and housing decor.|r")
 end
 
 SlashCmdList["LEARNALERT"] = function(msg)
@@ -1824,10 +2423,11 @@ SlashCmdList["LEARNALERT"] = function(msg)
             
             local scanScope = isBankOpen and "bags and bank" or "bags only"
             PrintMessage(string.format(
-                "Checked %s: %d mount(s), %d toy(s), %d follower curio(s), %d profession knowledge item(s), %d pet(s), %d decor learnable.",
+                "Checked %s: %d mount(s), %d toy(s), %d transmog item(s), %d follower curio(s), %d profession knowledge item(s), %d pet(s), %d decor learnable.",
                 scanScope,
                 #items.mounts,
                 #items.toys,
+                #items.transmog,
                 #items.curios,
                 #items.knowledge,
                 #items.pets,
@@ -1848,6 +2448,9 @@ SlashCmdList["LEARNALERT"] = function(msg)
     elseif cmd == "debugtoy" or cmd == "dt" then
         DebugToys()
 
+    elseif cmd == "debugtransmog" or cmd == "dtr" then
+        DebugTransmog()
+
     elseif cmd == "debugcurio" or cmd == "dcu" then
         DebugCurios()
 
@@ -1863,7 +2466,47 @@ SlashCmdList["LEARNALERT"] = function(msg)
     elseif cmd == "debugclick" or cmd == "dc" then
         LearnAlertDB.debugClicks = not LearnAlertDB.debugClicks
         print("|cff00a0ff[LearnAlert]|r Debug click logging: " .. (LearnAlertDB.debugClicks and "ON" or "OFF"))
-        
+
+    elseif cmd == "ignorelist" or cmd == "il" then
+        local ignoredIDs = GetSortedIgnoredItemIDs()
+        if #ignoredIDs == 0 then
+            print("|cff00a0ff[LearnAlert]|r Ignore list is empty.")
+        else
+            print("|cff00a0ff[LearnAlert]|r Ignored items:")
+            for _, itemID in ipairs(ignoredIDs) do
+                local itemName = GetItemInfo(itemID) or "Unknown"
+                print(string.format("  |cff888888%s|r (ID: %d) - /la unignore %d", itemName, itemID, itemID))
+            end
+        end
+
+    elseif cmd == "unignore" or cmd == "ui" then
+        local idStr = msg:match("^%S+%s+(.+)$")
+        local itemID = tonumber(idStr)
+        if not itemID then
+            print("|cff00a0ff[LearnAlert]|r Usage: /la unignore <itemID>")
+        elseif RemoveIgnoredItem(itemID) then
+            local itemName = GetItemInfo(itemID) or ("Item " .. itemID)
+            print(string.format("|cff00a0ff[LearnAlert]|r No longer ignoring |cff888888%s|r.", itemName))
+            ScheduleAlertUpdate(0)
+        else
+            print("|cff00a0ff[LearnAlert]|r Item " .. (idStr or "?") .. " is not in the ignore list.")
+        end
+
+    elseif cmd == "clearignored" or cmd == "ci" then
+        LearnAlertDB.ignoredItems = {}
+        if refreshIgnoredItemsSettingsUI then
+            refreshIgnoredItemsSettingsUI()
+        end
+        print("|cff00a0ff[LearnAlert]|r All ignored items cleared.")
+        ScheduleAlertUpdate(0)
+
+    elseif cmd == "settings" then
+        if learnAlertSettingsCategory then
+            Settings.OpenToCategory(learnAlertSettingsCategory:GetID())
+        else
+            print("|cff00a0ff[LearnAlert]|r Settings panel is unavailable (requires WoW 10.0+).")
+        end
+
     else
         print("|cffff0000[LearnAlert]|r Unknown command: " .. cmd)
         PrintCommandHelp()

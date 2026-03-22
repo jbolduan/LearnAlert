@@ -2,13 +2,21 @@
 
 ## Versioning
 
-The addon version is defined in the `## Version:` field of `LearnAlert.toc`. Use standard semantic versioning (`MAJOR.MINOR.PATCH`):
+The addon version is defined in the `## Version:` field of `LearnAlert.toc`. Use standard semantic versioning (`MAJOR.MINOR.PATCH`).
 
-- **PATCH** (`1.0.x`) - Bug fixes and minor corrections with no new functionality.
-- **MINOR** (`1.x.0`) - New features or item-type detection added in a backward-compatible way. Resets PATCH to 0.
+**To determine the correct version on any code change:**
+
+1. Run `git tag --list --sort=-version:refname` to find the most recent tagged version (e.g. `1.0.5`).
+2. Run `git diff <tag>` to review **all** changes since that tag — including any already in the working tree or made earlier in the session.
+3. Categorize the **full set of changes** together (not each change individually) and apply a **single increment** from the last tag:
+
+- **PATCH** (`1.0.x`) - Only bug fixes and minor corrections with no new functionality.
+- **MINOR** (`1.x.0`) - Any new features or item-type detection added in a backward-compatible way. Resets PATCH to 0.
 - **MAJOR** (`x.0.0`) - Breaking changes, major rewrites, or SavedVariables schema migrations that are not backward-compatible. Resets MINOR and PATCH to 0.
 
-When making any code change, increment the appropriate version component in `LearnAlert.toc` and update the version referenced in `README.md` if it appears there.
+Do **not** increment the version multiple times within a session. The version in `LearnAlert.toc` should reflect one step up from the last git tag, based on the highest-impact category of change present in the full diff.
+
+When the version in `LearnAlert.toc` changes, also update any version reference in `README.md`.
 
 ## Build and Deploy
 
@@ -107,8 +115,10 @@ LearnAlertDB contains:
     alertX = number,          -- Alert frame X position
     alertY = number,          -- Alert frame Y position
     verbose = boolean,        -- Console output verbosity
+    debugClicks = false,      -- Click payload debug logging
     alertScale = number,      -- UI scale multiplier (1.0 = normal)
-    checkInterval = number    -- Seconds between auto-checks (default 2)
+    checkInterval = number,   -- Seconds between auto-checks (default 2)
+    ignoredItems = table,     -- Map of itemID (number) -> true for suppressed items
 }
 ```
 
