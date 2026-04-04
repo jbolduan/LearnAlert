@@ -6,7 +6,8 @@ A World of Warcraft addon that opens a clickable list when there are mounts, toy
 
 - **Clickable Learnable List**: Opens a clickable list of learnable items when items are found
 - **Ignore Items**: Right-click any row to suppress that item from the alert; restore it with `/la unignore <id>`
-- **Settings Panel**: Enable or disable detection for each item type individually via the built-in WoW Settings UI (accessible from the in-game Settings screen or via `/la settings`)
+- **Settings Panel**: Configure LearnAlert in the built-in WoW Settings UI, including general toggles (enable addon, show alert, verbose output) and per-item-type detection toggles
+- **Warning Auto-confirm Options**: Optional separate toggles to auto-confirm bind-to-you and non-refundable warnings only for items used from LearnAlert rows
 - **Ignored Items Manager**: In the Settings panel, view all ignored items, remove them with a button, or drag bag items into the drop box to add them to the ignore list
 
 ## How It Works
@@ -59,7 +60,7 @@ A World of Warcraft addon that opens a clickable list when there are mounts, toy
 
 ## Configuration
 
-- **Settings panel**: Open the in-game Settings screen and find **LearnAlert** in the AddOns section, or type `/la settings`. Toggle each item type (Mounts, Toys, Transmog, Follower Curios, Profession Knowledge, Battle Pets, Housing Decor) on or off.
+- **Settings panel**: Open the in-game Settings screen and find **LearnAlert** in the AddOns section, or type `/la settings`. In **General**, toggle addon enable state, alert visibility, verbose output, and warning auto-confirm options (bind warning and non-refundable warning). Warning auto-confirm only applies to items used from LearnAlert rows. In **Item Type Detection**, toggle each type (Mounts, Toys, Transmog, Follower Curios, Profession Knowledge, Battle Pets, Housing Decor).
 - **Ignored Items section**: In LearnAlert settings, open the **Ignored Items** sub-page to see every ignored item, click **Remove** to unignore, or drag bag items to the drop target to add them.
 - **Drag the list window** to reposition it anywhere on your screen
 - **Toggle on/off** with `/la toggle`

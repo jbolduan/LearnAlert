@@ -14,6 +14,8 @@ local defaults = {
     alertX = 400,
     alertY = 100,
     verbose = false,
+    autoConfirmBindWarning = false,
+    autoConfirmRefundWarning = false,
     debugClicks = false,
     alertScale = 1.0,
     checkInterval = 2, -- Seconds between checks
@@ -118,15 +120,47 @@ local learnAlertSettingsCategory
 local ScheduleAlertUpdate
 local curioItemCacheByID = {}
 local knowledgeItemCacheByID = {}
+local knowledgeItemNegativeCacheExpiresAtByID = {}
 local transmogItemCacheByLink = {}
+local staticPopupHookRegistered = false
+local learnAlertActionContextToken = 0
+local learnAlertActionContextExpiresAt = 0
 ---@type GameTooltip
 local petScanTooltip = CreateFrame("GameTooltip", "LearnAlertPetScanTooltip", UIParent, "GameTooltipTemplate")
+---@type GameTooltip
+local genericScanTooltip = CreateFrame("GameTooltip", "LearnAlertGenericScanTooltip", UIParent, "GameTooltipTemplate")
 local clickDebugFrame
 local clickDebugEditBox
 local clickDebugLines = {}
 
+local function ClearDetectionCaches()
+    curioItemCacheByID = {}
+    knowledgeItemCacheByID = {}
+    knowledgeItemNegativeCacheExpiresAtByID = {}
+    transmogItemCacheByLink = {}
+end
+
+local function ClearDetectionCachesForItem(itemID)
+    itemID = tonumber(itemID)
+    if not itemID then
+        return
+    end
+
+    curioItemCacheByID[itemID] = nil
+    knowledgeItemCacheByID[itemID] = nil
+    knowledgeItemNegativeCacheExpiresAtByID[itemID] = nil
+
+    local itemToken = "item:" .. itemID
+    for cacheKey in pairs(transmogItemCacheByLink) do
+        if type(cacheKey) == "string" and string.find(cacheKey, itemToken, 1, true) then
+            transmogItemCacheByLink[cacheKey] = nil
+        end
+    end
+end
+
 -- Hidden tooltip owner for bag-item metadata parsing.
 petScanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
+genericScanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
 
 -- Refresh cooldown overlays for all visible buttons.
 local function RefreshButtonCooldowns()
@@ -147,6 +181,353 @@ local function PrintMessage(msg)
     if LearnAlertDB and LearnAlertDB.verbose then
         print("|cff00a0ff[LearnAlert]|r " .. msg)
     end
+end
+
+local function OpenSettingsCategory(category)
+    if not category then
+        return false
+    end
+
+    if Settings and Settings.OpenToCategory then
+        local categoryID = category.GetID and category:GetID() or category
+        Settings.OpenToCategory(categoryID)
+        return true
+    end
+
+    return false
+end
+
+local function ClearLearnAlertActionContext()
+    learnAlertActionContextExpiresAt = 0
+end
+
+local function HasRecentLearnAlertActionContext()
+    return learnAlertActionContextExpiresAt > GetTime()
+end
+
+local function MarkLearnAlertActionContext(itemID, bag, slot)
+    learnAlertActionContextToken = learnAlertActionContextToken + 1
+    learnAlertActionContextExpiresAt = GetTime() + 1.5
+
+    local contextToken = learnAlertActionContextToken
+    PrintMessage(string.format(
+        "LearnAlert action context armed: itemID=%s bag=%s slot=%s",
+        tostring(itemID),
+        tostring(bag),
+        tostring(slot)
+    ))
+
+    C_Timer.After(1.6, function()
+        if learnAlertActionContextToken == contextToken then
+            ClearLearnAlertActionContext()
+        end
+    end)
+end
+
+local function FindVisibleStaticPopup(which)
+    if type(StaticPopup_Visible) == "function" then
+        local _, frame = StaticPopup_Visible(which)
+        if frame then
+            return frame
+        end
+    end
+
+    if type(StaticPopup_FindVisible) == "function" then
+        local frame = StaticPopup_FindVisible(which)
+        if frame then
+            return frame
+        end
+    end
+
+    local numDialogs = tonumber(rawget(_G, "STATICPOPUP_NUMDIALOGS")) or 4
+    for i = 1, numDialogs do
+        local frame = _G["StaticPopup" .. i]
+        if frame and frame:IsShown() and frame.which == which then
+            return frame
+        end
+    end
+
+    return nil
+end
+
+local function GetStaticPopupText(frame)
+    if not frame then
+        return nil
+    end
+
+    local textRegion = frame.Text or frame.text
+    if not textRegion and frame.GetTextFontString then
+        textRegion = frame:GetTextFontString()
+    end
+
+    if textRegion and textRegion.GetText then
+        return textRegion:GetText()
+    end
+
+    return nil
+end
+
+local function GetStaticPopupPrimaryButton(frame)
+    if not frame then
+        return nil
+    end
+
+    if frame.GetButton1 then
+        return frame:GetButton1()
+    end
+
+    if frame.button1 then
+        return frame.button1
+    end
+
+    local frameName = frame.GetName and frame:GetName() or nil
+    if frameName then
+        return _G[frameName .. "Button1"]
+    end
+
+    return nil
+end
+
+local function HideStaticPopup(which)
+    if type(StaticPopup_Hide) == "function" then
+        StaticPopup_Hide(which)
+        return
+    end
+
+    local frame = FindVisibleStaticPopup(which)
+    if frame then
+        frame:Hide()
+    end
+end
+
+local BIND_WARNING_POPUPS = {
+    CONFIRM_BINDER = true,
+    ACTION_WILL_BIND_ITEM = true,
+    USE_BIND = true,
+    EQUIP_BIND = true,
+    EQUIP_BIND_TRADEABLE = true,
+    BIND_SOCKET = true,
+    BIND_ENCHANT = true,
+    CONVERT_TO_BIND_TO_ACCOUNT_CONFIRM = true,
+}
+
+local REFUND_WARNING_POPUPS = {
+    USE_NO_REFUND_CONFIRM = true,
+    EQUIP_BIND_REFUNDABLE = true,
+    CONFIRM_REFUND_ITEM = true,
+    CONFIRM_REFUND_TOKEN = true,
+    CONFIRM_MAIL_ITEM_UNREFUNDABLE = true,
+    CONFIRM_PURCHASE_NONREFUNDABLE_ITEM = true,
+}
+
+local BIND_WARNING_EVENT_HANDLERS = {
+    ACTION_WILL_BIND_ITEM = {
+        popup = "ACTION_WILL_BIND_ITEM",
+        canRun = function()
+            return C_Item and C_Item.ActionBindsItem
+        end,
+        run = function()
+            C_Item.ActionBindsItem()
+        end,
+    },
+    USE_BIND_CONFIRM = {
+        popup = "USE_BIND",
+        canRun = function()
+            return C_Item and C_Item.ConfirmBindOnUse
+        end,
+        run = function()
+            C_Item.ConfirmBindOnUse()
+        end,
+    },
+    EQUIP_BIND_CONFIRM = {
+        popup = "EQUIP_BIND",
+        canRun = function(slot)
+            return type(EquipPendingItem) == "function" and slot ~= nil
+        end,
+        run = function(slot)
+            EquipPendingItem(slot)
+        end,
+    },
+    EQUIP_BIND_TRADEABLE_CONFIRM = {
+        popup = "EQUIP_BIND_TRADEABLE",
+        canRun = function(slot)
+            return type(EquipPendingItem) == "function" and slot ~= nil
+        end,
+        run = function(slot)
+            EquipPendingItem(slot)
+        end,
+    },
+    BIND_ENCHANT = {
+        popup = "BIND_ENCHANT",
+        canRun = function()
+            return C_Item and C_Item.BindEnchant
+        end,
+        run = function()
+            C_Item.BindEnchant()
+        end,
+    },
+    CONVERT_TO_BIND_TO_ACCOUNT_CONFIRM = {
+        popup = "CONVERT_TO_BIND_TO_ACCOUNT_CONFIRM",
+        canRun = function()
+            return type(ConvertItemToBindToAccount) == "function"
+        end,
+        run = function()
+            ConvertItemToBindToAccount()
+        end,
+    },
+}
+
+local REFUND_WARNING_EVENT_HANDLERS = {
+    USE_NO_REFUND_CONFIRM = {
+        popup = "USE_NO_REFUND_CONFIRM",
+        canRun = function()
+            return C_Item and C_Item.ConfirmNoRefundOnUse
+        end,
+        run = function()
+            C_Item.ConfirmNoRefundOnUse()
+        end,
+    },
+    EQUIP_BIND_REFUNDABLE_CONFIRM = {
+        popup = "EQUIP_BIND_REFUNDABLE",
+        canRun = function(slot)
+            return type(EquipPendingItem) == "function" and slot ~= nil
+        end,
+        run = function(slot)
+            EquipPendingItem(slot)
+        end,
+    },
+}
+
+local WARNING_CONFIRM_EVENTS = {
+    "ACTION_WILL_BIND_ITEM",
+    "USE_BIND_CONFIRM",
+    "EQUIP_BIND_CONFIRM",
+    "EQUIP_BIND_REFUNDABLE_CONFIRM",
+    "EQUIP_BIND_TRADEABLE_CONFIRM",
+    "USE_NO_REFUND_CONFIRM",
+    "BIND_ENCHANT",
+    "CONVERT_TO_BIND_TO_ACCOUNT_CONFIRM",
+}
+
+local function RunWarningEventHandler(settingKey, handlerMap, event, ...)
+    if not LearnAlertDB or not LearnAlertDB[settingKey] then
+        return false
+    end
+
+    if not HasRecentLearnAlertActionContext() then
+        return false
+    end
+
+    local handler = handlerMap[event]
+    if not handler then
+        return false
+    end
+
+    if handler.canRun and not handler.canRun(...) then
+        return false
+    end
+
+    handler.run(...)
+
+    if handler.popup then
+        C_Timer.After(0, function()
+            HideStaticPopup(handler.popup)
+        end)
+    end
+
+    ClearLearnAlertActionContext()
+
+    return true
+end
+
+local function AcceptBindWarningEvent(event, ...)
+    return RunWarningEventHandler("autoConfirmBindWarning", BIND_WARNING_EVENT_HANDLERS, event, ...)
+end
+
+local function AcceptRefundWarningEvent(event, ...)
+    return RunWarningEventHandler("autoConfirmRefundWarning", REFUND_WARNING_EVENT_HANDLERS, event, ...)
+end
+
+local function IsBindWarningPopup(which)
+    return BIND_WARNING_POPUPS[which] == true
+end
+
+local function IsRefundWarningPopup(which, popupText)
+    if REFUND_WARNING_POPUPS[which] == true then
+        return true
+    end
+
+    local noRefundGlobal = rawget(_G, "NO_REFUND")
+    local noRefundText = type(noRefundGlobal) == "string" and noRefundGlobal or nil
+    if noRefundText and noRefundText ~= "" and type(popupText) == "string" and popupText ~= "" then
+        return string.find(string.lower(popupText), string.lower(noRefundText), 1, true) ~= nil
+    end
+
+    return false
+end
+
+local function TryAutoConfirmWarningPopup(which)
+    if not LearnAlertDB then
+        return
+    end
+
+    if not HasRecentLearnAlertActionContext() then
+        return
+    end
+
+    local popupFrame = FindVisibleStaticPopup(which)
+    if not popupFrame then
+        return
+    end
+
+    local popupText = GetStaticPopupText(popupFrame)
+    local shouldConfirm = false
+
+    if LearnAlertDB.autoConfirmBindWarning and IsBindWarningPopup(which) then
+        shouldConfirm = true
+    elseif LearnAlertDB.autoConfirmRefundWarning and IsRefundWarningPopup(which, popupText) then
+        shouldConfirm = true
+    end
+
+    if not shouldConfirm then
+        return
+    end
+
+    if InCombatLockdown() then
+        PrintMessage(string.format("Auto-confirm skipped in combat for popup '%s'.", tostring(which)))
+        return
+    end
+
+    local confirmButton = GetStaticPopupPrimaryButton(popupFrame)
+    if not confirmButton or not confirmButton:IsEnabled() then
+        return
+    end
+
+    C_Timer.After(0, function()
+        if popupFrame:IsShown() and popupFrame.which == which and confirmButton:IsShown() and confirmButton:IsEnabled() then
+            confirmButton:Click()
+            ClearLearnAlertActionContext()
+            PrintMessage(string.format("Auto-confirmed warning popup '%s'.", tostring(which)))
+        end
+    end)
+end
+
+local function RegisterWarningAutoConfirmHook()
+    if staticPopupHookRegistered then
+        return
+    end
+
+    if not hooksecurefunc or not StaticPopup_Show then
+        return
+    end
+
+    hooksecurefunc("StaticPopup_Show", function(which)
+        if which then
+            TryAutoConfirmWarningPopup(which)
+        end
+    end)
+
+    staticPopupHookRegistered = true
 end
 
 local function EnsureClickDebugFrame()
@@ -463,6 +844,40 @@ local function AddLowerTooltipTexts(textMap, tooltipData)
     end
 end
 
+local function AddLowerBagTooltipTexts(textMap, bag, slot)
+    if not bag or not slot then
+        return
+    end
+
+    genericScanTooltip:ClearLines()
+    genericScanTooltip:SetBagItem(bag, slot)
+
+    local tooltipName = genericScanTooltip:GetName()
+    if not tooltipName then
+        return
+    end
+
+    local numLines = genericScanTooltip:NumLines() or 0
+    for i = 1, numLines do
+        local leftRegion = _G[tooltipName .. "TextLeft" .. i]
+        local rightRegion = _G[tooltipName .. "TextRight" .. i]
+
+        if leftRegion and leftRegion.GetText then
+            local leftText = leftRegion:GetText()
+            if leftText and leftText ~= "" then
+                textMap[string.lower(leftText)] = true
+            end
+        end
+
+        if rightRegion and rightRegion.GetText then
+            local rightText = rightRegion:GetText()
+            if rightText and rightText ~= "" then
+                textMap[string.lower(rightText)] = true
+            end
+        end
+    end
+end
+
 local function IsProfessionKnowledgeTooltipText(textMap)
     local hasKnowledge = false
     local hasUseLine = false
@@ -472,8 +887,13 @@ local function IsProfessionKnowledgeTooltipText(textMap)
             hasKnowledge = true
         end
 
-        if string.find(text, "use:", 1, true) then
+        if string.find(text, "use:", 1, true) or string.find(text, "use ", 1, true) then
             hasUseLine = true
+        end
+
+        if string.find(text, "study to increase your", 1, true)
+            and string.find(text, "knowledge", 1, true) then
+            return true
         end
 
         -- Fast path: a single line that says "increase your ... knowledge"
@@ -538,7 +958,10 @@ local function IsFollowerCurioItem(itemContext)
     if not isLikelyContainerType
         and not string.find(itemNameLower, "curio", 1, true)
         and not string.find(itemNameLower, "follower", 1, true) then
-        curioItemCacheByID[itemContext.itemID] = false
+        -- Do not persist a negative cache entry while metadata is still loading.
+        if itemContext.itemName and itemContext.itemClass and itemContext.itemSubClass then
+            curioItemCacheByID[itemContext.itemID] = false
+        end
         return false
     end
 
@@ -569,9 +992,19 @@ end
 
 -- Determine whether an item is a profession knowledge item.
 local function IsProfessionKnowledgeItem(itemContext)
-    local cachedResult = knowledgeItemCacheByID[itemContext.itemID]
-    if cachedResult ~= nil then
-        return cachedResult
+    local itemID = itemContext.itemID
+    local cachedResult = knowledgeItemCacheByID[itemID]
+    if cachedResult == true then
+        return true
+    elseif cachedResult == false then
+        local expiresAt = knowledgeItemNegativeCacheExpiresAtByID[itemID]
+        if expiresAt and expiresAt > GetTime() then
+            return false
+        end
+
+        -- Negative cache expired; retry detection so late-loading tooltip data can flip to true.
+        knowledgeItemCacheByID[itemID] = nil
+        knowledgeItemNegativeCacheExpiresAtByID[itemID] = nil
     end
 
     local itemClassLower = itemContext.itemClass and string.lower(itemContext.itemClass) or ""
@@ -585,7 +1018,11 @@ local function IsProfessionKnowledgeItem(itemContext)
         or itemSubClassLower == "finishing reagents"
 
     if not isLikelyContainerType and not string.find(itemNameLower, "knowledge", 1, true) then
-        knowledgeItemCacheByID[itemContext.itemID] = false
+        -- Do not persist a negative cache entry while metadata is still loading.
+        if itemContext.itemName and itemContext.itemClass and itemContext.itemSubClass then
+            knowledgeItemCacheByID[itemID] = false
+            knowledgeItemNegativeCacheExpiresAtByID[itemID] = GetTime() + 8
+        end
         return false
     end
 
@@ -601,6 +1038,12 @@ local function IsProfessionKnowledgeItem(itemContext)
         end
     end
 
+    -- Fallback: the legacy GameTooltip path can expose use-text lines that are
+    -- occasionally missing from C_TooltipInfo for newer profession items.
+    if itemContext.bag and itemContext.slot then
+        AddLowerBagTooltipTexts(tooltipTexts, itemContext.bag, itemContext.slot)
+    end
+
     -- Exclude the item name from the textMap so that items whose names contain
     -- "knowledge" (e.g. "Untapped Forbidden Knowledge") don't get false-positives.
     if itemNameLower ~= "" then
@@ -609,7 +1052,13 @@ local function IsProfessionKnowledgeItem(itemContext)
 
     local isKnowledge = IsProfessionKnowledgeTooltipText(tooltipTexts)
 
-    knowledgeItemCacheByID[itemContext.itemID] = isKnowledge
+    knowledgeItemCacheByID[itemID] = isKnowledge
+    if isKnowledge then
+        knowledgeItemNegativeCacheExpiresAtByID[itemID] = nil
+    else
+        -- Short TTL avoids sticky false-negatives before tooltip text fully hydrates.
+        knowledgeItemNegativeCacheExpiresAtByID[itemID] = GetTime() + 8
+    end
     return isKnowledge
 end
 
@@ -790,7 +1239,12 @@ local function IsLearnableTransmogItem(itemContext)
     end
 
     local isLearnableTransmog = IsTransmogTooltipText(tooltipTexts)
-    transmogItemCacheByLink[cacheKey] = isLearnableTransmog
+
+    -- Avoid persisting false when item metadata may still be incomplete.
+    if isLearnableTransmog or (itemContext.itemName and itemContext.itemClass and itemContext.itemSubClass) then
+        transmogItemCacheByLink[cacheKey] = isLearnableTransmog
+    end
+
     return isLearnableTransmog
 end
 
@@ -1201,8 +1655,19 @@ local function CreateSettingsPanel()
         Settings.CreateCheckbox(category, setting, tooltipText)
     end
 
+    -- Section: general behavior
+    if layout and CreateSettingsListSectionHeaderInitializer then
+        layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("General"))
+    end
+
+    AddCheckbox("enabled", "Enable LearnAlert", "Enable or disable LearnAlert scanning and alerts.")
+    AddCheckbox("showAlert", "Show Alert Window", "Show the learnable-items alert when matches are found.")
+    AddCheckbox("verbose", "Verbose Chat Output", "Print detailed LearnAlert status messages to chat.")
+    AddCheckbox("autoConfirmBindWarning", "Auto-confirm Bind Warning", "Automatically click OK on bind-to-you confirmation popups.")
+    AddCheckbox("autoConfirmRefundWarning", "Auto-confirm Non-refundable Warning", "Automatically click OK on non-refundable confirmation popups.")
+
     -- Section: item-type detection toggles
-    if CreateSettingsListSectionHeaderInitializer then
+    if layout and CreateSettingsListSectionHeaderInitializer then
         layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Item Type Detection"))
     end
 
@@ -1402,6 +1867,13 @@ local function CreateItemButton(parent, index)
     -- Set up secure attributes for item usage
     button:SetAttribute("type", "item")
     button:RegisterForClicks("AnyUp", "AnyDown")
+    button:HookScript("PreClick", function(self, mouseButton)
+        if mouseButton == "LeftButton" then
+            MarkLearnAlertActionContext(self.itemID, self.bag, self.slot)
+        else
+            ClearLearnAlertActionContext()
+        end
+    end)
     
     -- Tooltip
     button:SetScript("OnEnter", function(self)
@@ -1598,6 +2070,11 @@ local function UpdateAlert()
     if not alertFrame then return end
     if InCombatLockdown() then return end
 
+    if LearnAlertDB and LearnAlertDB.enabled == false then
+        alertFrame:Hide()
+        return
+    end
+
     if LearnAlertDB and LearnAlertDB.showAlert == false then
         alertFrame:Hide()
         return
@@ -1678,6 +2155,7 @@ local function Initialize()
     -- Create UI
     alertFrame = CreateAlertFrame()
     CreateSettingsPanel()
+    RegisterWarningAutoConfirmHook()
 
     -- Create button pool
     for i = 1, MAX_BUTTONS do
@@ -2501,9 +2979,7 @@ SlashCmdList["LEARNALERT"] = function(msg)
         ScheduleAlertUpdate(0)
 
     elseif cmd == "settings" then
-        if learnAlertSettingsCategory then
-            Settings.OpenToCategory(learnAlertSettingsCategory:GetID())
-        else
+        if not OpenSettingsCategory(learnAlertSettingsCategory) then
             print("|cff00a0ff[LearnAlert]|r Settings panel is unavailable (requires WoW 10.0+).")
         end
 
@@ -2524,13 +3000,23 @@ eventFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
 eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 eventFrame:RegisterEvent("BANKFRAME_OPENED")
 eventFrame:RegisterEvent("BANKFRAME_CLOSED")
+for _, warningEvent in ipairs(WARNING_CONFIRM_EVENTS) do
+    eventFrame:RegisterEvent(warningEvent)
+end
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1, ...)
     if event == "ADDON_LOADED" and arg1 == addonName then
         Initialize()
         self:UnregisterEvent("ADDON_LOADED")
+
+    elseif AcceptBindWarningEvent(event, arg1, ...) then
+        PrintMessage("Auto-confirmed bind warning from event: " .. tostring(event))
+
+    elseif AcceptRefundWarningEvent(event, arg1, ...) then
+        PrintMessage("Auto-confirmed refund warning from event: " .. tostring(event))
         
     elseif event == "BAG_UPDATE_DELAYED" then
+        ClearDetectionCaches()
         -- Check for learnable items and update alert
         -- This includes bank items when bank is open
         if alertFrame then
@@ -2566,12 +3052,14 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, ...)
         end
 
     elseif event == "BAG_NEW_ITEMS_UPDATED" then
+        ClearDetectionCaches()
         -- Trigger quickly when new purchases/loot are pushed into bags.
         if alertFrame then
             ScheduleAlertUpdate(0.12)
         end
 
     elseif event == "ITEM_DATA_LOAD_RESULT" or event == "GET_ITEM_INFO_RECEIVED" then
+        ClearDetectionCachesForItem(arg1)
         -- Re-scan when item metadata becomes available.
         if alertFrame then
             ScheduleAlertUpdate(0.15)

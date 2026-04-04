@@ -115,6 +115,8 @@ LearnAlertDB contains:
     alertX = number,          -- Alert frame X position
     alertY = number,          -- Alert frame Y position
     verbose = boolean,        -- Console output verbosity
+    autoConfirmBindWarning = boolean,    -- Auto-confirm bind-to-you warning popups
+    autoConfirmRefundWarning = boolean,  -- Auto-confirm non-refundable warning popups
     debugClicks = false,      -- Click payload debug logging
     alertScale = number,      -- UI scale multiplier (1.0 = normal)
     checkInterval = number,   -- Seconds between auto-checks (default 2)
