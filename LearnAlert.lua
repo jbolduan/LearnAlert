@@ -20,6 +20,7 @@ local defaults = {
     alertScale = 1.0,
     checkInterval = 2, -- Seconds between checks
     ignoredItems = {}, -- Table of itemID -> true for items suppressed from the alert
+    customCurioItems = {}, -- Table of lowercase item name -> display name for forced curio tracking
     -- Per-type detection toggles
     detectMounts = true,
     detectToys = true,
@@ -30,6 +31,10 @@ local defaults = {
     detectDecor = true,
 }
 
+local DEFAULT_CUSTOM_CURIO_ITEMS = {
+    ["rattling bag o' gold"] = "Rattling Bag o' Gold",
+}
+
 -- Return true when itemID should be suppressed from the alert.
 local function IsItemIgnored(itemID)
     return LearnAlertDB
@@ -38,11 +43,86 @@ local function IsItemIgnored(itemID)
 end
 
 local refreshIgnoredItemsSettingsUI
+local refreshCustomCurioItemsSettingsUI
 
 local function EnsureIgnoredItemsTable()
     if not LearnAlertDB.ignoredItems then
         LearnAlertDB.ignoredItems = {}
     end
+end
+
+local function EnsureCustomCurioItemsTable()
+    if not LearnAlertDB.customCurioItems then
+        LearnAlertDB.customCurioItems = {}
+    end
+
+    for itemNameLower, displayName in pairs(DEFAULT_CUSTOM_CURIO_ITEMS) do
+        if LearnAlertDB.customCurioItems[itemNameLower] == nil then
+            LearnAlertDB.customCurioItems[itemNameLower] = displayName
+        end
+    end
+end
+
+local function IsCustomCurioItemNameTracked(itemNameLower)
+    return LearnAlertDB
+        and LearnAlertDB.customCurioItems
+        and itemNameLower
+        and LearnAlertDB.customCurioItems[itemNameLower] ~= nil
+end
+
+local function AddCustomCurioItemName(displayName)
+    if not displayName or not LearnAlertDB then
+        return false
+    end
+
+    local normalizedDisplay = string.gsub(displayName, "^%s*(.-)%s*$", "%1")
+    if normalizedDisplay == "" then
+        return false
+    end
+
+    local itemNameLower = string.lower(normalizedDisplay)
+    EnsureCustomCurioItemsTable()
+    if LearnAlertDB.customCurioItems[itemNameLower] ~= nil then
+        return false
+    end
+
+    LearnAlertDB.customCurioItems[itemNameLower] = normalizedDisplay
+    if refreshCustomCurioItemsSettingsUI then
+        refreshCustomCurioItemsSettingsUI()
+    end
+
+    return true
+end
+
+local function RemoveCustomCurioItemName(itemNameLower)
+    if not itemNameLower or not LearnAlertDB or not LearnAlertDB.customCurioItems then
+        return false
+    end
+
+    if LearnAlertDB.customCurioItems[itemNameLower] == nil then
+        return false
+    end
+
+    LearnAlertDB.customCurioItems[itemNameLower] = nil
+    if refreshCustomCurioItemsSettingsUI then
+        refreshCustomCurioItemsSettingsUI()
+    end
+
+    return true
+end
+
+local function GetSortedCustomCurioItemKeys()
+    local keys = {}
+    if not LearnAlertDB or not LearnAlertDB.customCurioItems then
+        return keys
+    end
+
+    for itemNameLower in pairs(LearnAlertDB.customCurioItems) do
+        table.insert(keys, itemNameLower)
+    end
+
+    table.sort(keys)
+    return keys
 end
 
 local function AddIgnoredItem(itemID)
@@ -125,6 +205,9 @@ local transmogItemCacheByLink = {}
 local staticPopupHookRegistered = false
 local learnAlertActionContextToken = 0
 local learnAlertActionContextExpiresAt = 0
+local pendingTransmogSwapbackBySlot = {}
+local isTransmogSwapbackRetryScheduled = false
+local SelectPreferredEquipSlot
 ---@type GameTooltip
 local petScanTooltip = CreateFrame("GameTooltip", "LearnAlertPetScanTooltip", UIParent, "GameTooltipTemplate")
 ---@type GameTooltip
@@ -222,6 +305,98 @@ local function MarkLearnAlertActionContext(itemID, bag, slot)
             ClearLearnAlertActionContext()
         end
     end)
+end
+
+local function IsSwapbackSlotRestored(slotID, previous)
+    local currentLink = GetInventoryItemLink("player", slotID)
+    local currentItemID = GetInventoryItemID("player", slotID)
+
+    if previous.itemID and currentItemID then
+        return currentItemID == previous.itemID
+    end
+
+    if previous.link then
+        return currentLink == previous.link
+    end
+
+    return false
+end
+
+local function TryPendingTransmogSwapbackNow()
+    if InCombatLockdown() then
+        return false
+    end
+
+    local now = GetTime()
+    for slotID, pending in pairs(pendingTransmogSwapbackBySlot) do
+        if now > pending.expiresAt then
+            pendingTransmogSwapbackBySlot[slotID] = nil
+        elseif IsSwapbackSlotRestored(slotID, pending.previous) then
+            pendingTransmogSwapbackBySlot[slotID] = nil
+        elseif type(EquipItemByName) == "function" then
+            local equipTarget = pending.previous.itemID or pending.previous.itemName or pending.previous.link
+            if equipTarget then
+                EquipItemByName(equipTarget, slotID)
+            end
+        end
+    end
+
+    return next(pendingTransmogSwapbackBySlot) == nil
+end
+
+local function SchedulePendingTransmogSwapbackRetry(delaySeconds)
+    if isTransmogSwapbackRetryScheduled then
+        return
+    end
+
+    isTransmogSwapbackRetryScheduled = true
+    C_Timer.After(delaySeconds or 0.05, function()
+        isTransmogSwapbackRetryScheduled = false
+
+        if not TryPendingTransmogSwapbackNow() then
+            SchedulePendingTransmogSwapbackRetry(0.25)
+        end
+    end)
+end
+
+local function QueuePendingTransmogSwapback(slotCandidates)
+    local slotsToWatch = {}
+    if slotCandidates and #slotCandidates > 0 then
+        for _, slotID in ipairs(slotCandidates) do
+            if slotID and slotID >= 1 and slotID <= 19 then
+                table.insert(slotsToWatch, slotID)
+            end
+        end
+    else
+        for slotID = 1, 19 do
+            table.insert(slotsToWatch, slotID)
+        end
+    end
+
+    local now = GetTime()
+    for _, slotID in ipairs(slotsToWatch) do
+        local equippedLink = GetInventoryItemLink("player", slotID)
+        local equippedItemID = GetInventoryItemID("player", slotID)
+        local equippedItemName = equippedLink and string.match(equippedLink, "%[(.+)%]") or nil
+
+        if equippedLink or equippedItemID or equippedItemName then
+            local existingPending = pendingTransmogSwapbackBySlot[slotID]
+            if existingPending then
+                existingPending.expiresAt = now + 10
+            else
+                pendingTransmogSwapbackBySlot[slotID] = {
+                    previous = {
+                        link = equippedLink,
+                        itemID = equippedItemID,
+                        itemName = equippedItemName,
+                    },
+                    expiresAt = now + 10,
+                }
+            end
+        end
+    end
+
+    SchedulePendingTransmogSwapbackRetry(0.05)
 end
 
 local function FindVisibleStaticPopup(which)
@@ -428,6 +603,9 @@ local function RunWarningEventHandler(settingKey, handlerMap, event, ...)
     end
 
     handler.run(...)
+
+    -- Transmog swap-back can be delayed by popup flow; retry immediately after confirmation.
+    SchedulePendingTransmogSwapbackRetry(0)
 
     if handler.popup then
         C_Timer.After(0, function()
@@ -943,6 +1121,12 @@ local function IsFollowerCurioItem(itemContext)
     local itemSubClassLower = itemContext.itemSubClass and string.lower(itemContext.itemSubClass) or ""
     local itemNameLower = itemContext.itemName and string.lower(itemContext.itemName) or ""
 
+    -- Include select repeatable Delves consumables that should be surfaced.
+    if itemNameLower ~= "" and IsCustomCurioItemNameTracked(itemNameLower) then
+        curioItemCacheByID[itemContext.itemID] = true
+        return true
+    end
+
     -- If the game's own item subclass identifies it as a curio (e.g. "Utility Curio",
     -- "Combat Curio"), that is a definitive signal — no tooltip heuristics needed.
     if string.find(itemSubClassLower, "curio", 1, true) then
@@ -1248,6 +1432,82 @@ local function IsLearnableTransmogItem(itemContext)
     return isLearnableTransmog
 end
 
+local function IsTransmogContainerItem(itemContext)
+    local itemNameLower = itemContext.itemName and string.lower(itemContext.itemName) or ""
+    return string.find(itemNameLower, "ensemble:", 1, true) ~= nil
+        or string.find(itemNameLower, "arsenal:", 1, true) ~= nil
+end
+
+local ITEM_EQUIP_LOC_TO_SLOTS = {
+    INVTYPE_HEAD = { INVSLOT_HEAD or 1 },
+    INVTYPE_NECK = { INVSLOT_NECK or 2 },
+    INVTYPE_SHOULDER = { INVSLOT_SHOULDER or 3 },
+    INVTYPE_BODY = { INVSLOT_BODY or 4 },
+    INVTYPE_CHEST = { INVSLOT_CHEST or 5 },
+    INVTYPE_ROBE = { INVSLOT_CHEST or 5 },
+    INVTYPE_WAIST = { INVSLOT_WAIST or 6 },
+    INVTYPE_LEGS = { INVSLOT_LEGS or 7 },
+    INVTYPE_FEET = { INVSLOT_FEET or 8 },
+    INVTYPE_WRIST = { INVSLOT_WRIST or 9 },
+    INVTYPE_HAND = { INVSLOT_HAND or 10 },
+    INVTYPE_FINGER = { INVSLOT_FINGER1 or 11, INVSLOT_FINGER2 or 12 },
+    INVTYPE_TRINKET = { INVSLOT_TRINKET1 or 13, INVSLOT_TRINKET2 or 14 },
+    INVTYPE_CLOAK = { INVSLOT_BACK or 15 },
+    INVTYPE_WEAPON = { INVSLOT_MAINHAND or 16, INVSLOT_OFFHAND or 17 },
+    INVTYPE_2HWEAPON = { INVSLOT_MAINHAND or 16 },
+    INVTYPE_WEAPONMAINHAND = { INVSLOT_MAINHAND or 16 },
+    INVTYPE_WEAPONOFFHAND = { INVSLOT_OFFHAND or 17 },
+    INVTYPE_HOLDABLE = { INVSLOT_OFFHAND or 17 },
+    INVTYPE_SHIELD = { INVSLOT_OFFHAND or 17 },
+    INVTYPE_RANGED = { INVSLOT_RANGED or 18 },
+    INVTYPE_RANGEDRIGHT = { INVSLOT_RANGED or 18 },
+    INVTYPE_RELIC = { INVSLOT_RANGED or 18 },
+    INVTYPE_TABARD = { INVSLOT_TABARD or 19 },
+}
+
+local function GetCandidateEquipSlotsForItemEquipLoc(itemEquipLoc)
+    return itemEquipLoc and ITEM_EQUIP_LOC_TO_SLOTS[itemEquipLoc] or nil
+end
+
+SelectPreferredEquipSlot = function(slotCandidates)
+    if not slotCandidates then
+        return nil
+    end
+
+    for _, slotID in ipairs(slotCandidates) do
+        if GetInventoryItemLink("player", slotID) then
+            return slotID
+        end
+    end
+
+    return slotCandidates[1]
+end
+
+local function BuildTransmogSwapbackMacroText(bag, slot, slotCandidates)
+    if not bag or not slot then
+        return nil
+    end
+
+    local useLine = string.format("/use %d %d", bag, slot)
+    local equipSlot = SelectPreferredEquipSlot(slotCandidates)
+    if not equipSlot then
+        return useLine
+    end
+
+    local equippedLink = GetInventoryItemLink("player", equipSlot)
+    local equippedItemName = equippedLink and string.match(equippedLink, "%[(.+)%]") or nil
+    if equippedItemName and equippedItemName ~= "" then
+        return string.format("%s\n/equipslot %d %s", useLine, equipSlot, equippedItemName)
+    end
+
+    local equippedItemID = GetInventoryItemID("player", equipSlot)
+    if equippedItemID then
+        return string.format("%s\n/equipslot %d %d", useLine, equipSlot, equippedItemID)
+    end
+
+    return useLine
+end
+
 local function IterateBagItems(callback, includeBank)
     -- Scan regular bags (backpack + bag slots)
     for bag = 0, NUM_BAG_SLOTS do
@@ -1303,7 +1563,7 @@ end
 
 local function GetBagItemContext(bag, slot, containerInfo)
     local itemID = containerInfo.itemID
-    local itemName, itemLink, itemRarity, _, _, itemClass, itemSubClass, _, _, itemTexture = GetItemInfo(itemID)
+    local itemName, itemLink, itemRarity, _, _, itemClass, itemSubClass, _, itemEquipLoc, itemTexture = GetItemInfo(itemID)
     local bagItemLink = C_Container.GetContainerItemLink(bag, slot) or containerInfo.hyperlink or itemLink
 
     if not itemClass or not itemSubClass or IsBattlePetClassItem(itemID) then
@@ -1321,6 +1581,7 @@ local function GetBagItemContext(bag, slot, containerInfo)
         itemRarity = itemRarity,
         itemClass = itemClass,
         itemSubClass = itemSubClass,
+        itemEquipLoc = itemEquipLoc,
         itemTexture = itemTexture,
         bagItemLink = bagItemLink,
     }
@@ -1379,12 +1640,17 @@ local function BuildLearnableTransmogData(itemContext)
         return nil
     end
 
+    local isContainerItem = IsTransmogContainerItem(itemContext)
+
     return {
         itemID = itemContext.itemID,
         itemName = itemContext.itemName,
         itemLink = itemContext.bagItemLink,
         itemTexture = itemContext.itemTexture,
         rarity = itemContext.itemRarity,
+        itemType = "transmog",
+        requiresEquipToLearn = not isContainerItem,
+        transmogEquipSlots = GetCandidateEquipSlotsForItemEquipLoc(itemContext.itemEquipLoc),
         bag = itemContext.bag,
         slot = itemContext.slot,
     }
@@ -1822,6 +2088,153 @@ local function CreateSettingsPanel()
         end
 
         ignoredPanel:Hide()
+
+        local customCurioPanel = CreateFrame("Frame", "LearnAlertCustomCurioSettingsPanel", nil, "BackdropTemplate")
+        customCurioPanel:Hide()
+
+        local customTitle = customCurioPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        customTitle:SetPoint("TOPLEFT", 16, -16)
+        customTitle:SetText("Custom Curio Items")
+
+        local customHelpText = customCurioPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        customHelpText:SetPoint("TOPLEFT", customTitle, "BOTTOMLEFT", 0, -8)
+        customHelpText:SetText("Drag an item from your bags onto the drop box to always treat it as a follower curio.")
+
+        local customDropBox = CreateFrame("Button", nil, customCurioPanel, "BackdropTemplate")
+        customDropBox:SetSize(360, 38)
+        customDropBox:SetPoint("TOPLEFT", customHelpText, "BOTTOMLEFT", 0, -10)
+        customDropBox:SetBackdrop({
+            bgFile = "Interface\\Buttons\\WHITE8x8",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            edgeSize = 14,
+            insets = { left = 3, right = 3, top = 3, bottom = 3 },
+        })
+        customDropBox:SetBackdropColor(0.08, 0.08, 0.08, 0.9)
+        customDropBox:SetBackdropBorderColor(0.45, 0.45, 0.45, 1)
+
+        local customDropLabel = customDropBox:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        customDropLabel:SetPoint("CENTER")
+        customDropLabel:SetText("Drop Bag Item Here To Track As Curio")
+
+        local customListHeader = customCurioPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        customListHeader:SetPoint("TOPLEFT", customDropBox, "BOTTOMLEFT", 0, -14)
+        customListHeader:SetText("Custom Curio Item List")
+
+        local customScrollFrame = CreateFrame("ScrollFrame", nil, customCurioPanel, "UIPanelScrollFrameTemplate")
+        customScrollFrame:SetPoint("TOPLEFT", customListHeader, "BOTTOMLEFT", 0, -8)
+        customScrollFrame:SetPoint("BOTTOMRIGHT", customCurioPanel, "BOTTOMRIGHT", -30, 14)
+
+        local customListContent = CreateFrame("Frame", nil, customScrollFrame)
+        customListContent:SetSize(560, 1)
+        customScrollFrame:SetScrollChild(customListContent)
+        customScrollFrame:SetScript("OnSizeChanged", function(self, width)
+            customListContent:SetWidth(math.max(1, width - 26))
+        end)
+
+        local customEmptyText = customListContent:CreateFontString(nil, "OVERLAY", "GameFontDisable")
+        customEmptyText:SetPoint("TOPLEFT", 0, 0)
+        customEmptyText:SetText("No custom curio items configured.")
+
+        local customRowPool = {}
+        local customRowHeight = 24
+
+        local function CreateCustomRow(index)
+            local row = CreateFrame("Frame", nil, customListContent)
+            row:SetHeight(customRowHeight)
+            row:SetPoint("TOPLEFT", 0, -((index - 1) * customRowHeight))
+            row:SetPoint("TOPRIGHT", -6, -((index - 1) * customRowHeight))
+
+            row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            row.text:SetPoint("LEFT", 2, 0)
+            row.text:SetPoint("RIGHT", -70, 0)
+            row.text:SetJustifyH("LEFT")
+
+            row.removeButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+            row.removeButton:SetSize(62, 20)
+            row.removeButton:SetPoint("RIGHT", -2, 0)
+            row.removeButton:SetText("Remove")
+            row.removeButton:SetScript("OnClick", function(self)
+                local itemNameLower = self:GetParent().itemNameLower
+                local displayName = LearnAlertDB
+                    and LearnAlertDB.customCurioItems
+                    and LearnAlertDB.customCurioItems[itemNameLower]
+                    or itemNameLower
+
+                if RemoveCustomCurioItemName(itemNameLower) then
+                    print(string.format("|cff00a0ff[LearnAlert]|r Removed custom curio item |cff888888%s|r.", displayName or "Unknown"))
+                    ScheduleAlertUpdate(0)
+                end
+            end)
+
+            row:Hide()
+            return row
+        end
+
+        local function RefreshCustomCurioRows()
+            EnsureCustomCurioItemsTable()
+
+            local customItemKeys = GetSortedCustomCurioItemKeys()
+            customEmptyText:SetShown(#customItemKeys == 0)
+
+            for index, itemNameLower in ipairs(customItemKeys) do
+                local row = customRowPool[index]
+                if not row then
+                    row = CreateCustomRow(index)
+                    customRowPool[index] = row
+                end
+
+                local displayName = LearnAlertDB.customCurioItems[itemNameLower] or itemNameLower
+                row.itemNameLower = itemNameLower
+                row.text:SetText(displayName)
+                row:Show()
+            end
+
+            for index = #customItemKeys + 1, #customRowPool do
+                customRowPool[index]:Hide()
+            end
+
+            customListContent:SetHeight(math.max(1, #customItemKeys * customRowHeight))
+        end
+
+        local function TryAddCustomCurioFromCursor()
+            local cursorType, itemID = GetCursorInfo()
+            if cursorType ~= "item" or not itemID then
+                return
+            end
+
+            ClearCursor()
+
+            local itemName = GetItemInfo(itemID)
+            if not itemName or itemName == "" then
+                C_Item.RequestLoadItemDataByID(itemID)
+                print(string.format("|cff00a0ff[LearnAlert]|r Item data for %d is still loading. Try again in a moment.", itemID))
+                return
+            end
+
+            if AddCustomCurioItemName(itemName) then
+                print(string.format("|cff00a0ff[LearnAlert]|r Added custom curio item |cff888888%s|r.", itemName))
+                ScheduleAlertUpdate(0)
+            else
+                print("|cff00a0ff[LearnAlert]|r That item is already in custom curio items.")
+            end
+        end
+
+        customDropBox:SetScript("OnReceiveDrag", TryAddCustomCurioFromCursor)
+        customDropBox:SetScript("OnMouseUp", function(_, mouseButton)
+            if mouseButton == "LeftButton" or mouseButton == "RightButton" then
+                TryAddCustomCurioFromCursor()
+            end
+        end)
+
+        customCurioPanel:SetScript("OnShow", RefreshCustomCurioRows)
+        refreshCustomCurioItemsSettingsUI = RefreshCustomCurioRows
+
+        local customCurioSubcategory = Settings.RegisterCanvasLayoutSubcategory(category, customCurioPanel, "Custom Items")
+        if customCurioSubcategory then
+            Settings.RegisterAddOnCategory(customCurioSubcategory)
+        end
+
+        customCurioPanel:Hide()
     end
 
     Settings.RegisterAddOnCategory(category)
@@ -1870,6 +2283,18 @@ local function CreateItemButton(parent, index)
     button:HookScript("PreClick", function(self, mouseButton)
         if mouseButton == "LeftButton" then
             MarkLearnAlertActionContext(self.itemID, self.bag, self.slot)
+
+            if self.requiresEquipToLearn and self.bag and self.slot then
+                QueuePendingTransmogSwapback(self.transmogEquipSlots)
+                local macroText = BuildTransmogSwapbackMacroText(self.bag, self.slot, self.transmogEquipSlots)
+                if macroText and macroText ~= "" then
+                    self:SetAttribute("type", nil)
+                    self:SetAttribute("item", nil)
+                    self:SetAttribute("item1", nil)
+                    self:SetAttribute("type1", "macro")
+                    self:SetAttribute("macrotext1", macroText)
+                end
+            end
         else
             ClearLearnAlertActionContext()
         end
@@ -1885,7 +2310,12 @@ local function CreateItemButton(parent, index)
                 GameTooltip:SetItemByID(self.itemID)
             end
             GameTooltip:AddLine(" ")
-            GameTooltip:AddLine("|cff00ff00Click to learn|r", 1, 1, 1)
+            if self.requiresEquipToLearn then
+                GameTooltip:AddLine("|cff00ff00Click to learn and re-equip your previous item|r", 1, 1, 1)
+                GameTooltip:AddLine("|cff888888May briefly equip during learning|r", 1, 1, 1)
+            else
+                GameTooltip:AddLine("|cff00ff00Click to learn|r", 1, 1, 1)
+            end
             GameTooltip:AddLine("|cff888888Right-click to ignore|r", 1, 1, 1)
             GameTooltip:Show()
         end
@@ -1911,6 +2341,7 @@ local function CreateItemButton(parent, index)
             end
             return
         end
+
         PrintDebugClick(string.format(
             "Click row: itemID=%s bag=%s slot=%s mouseButton=%s attrType=%s attrType1=%s attrItem=%s attrItem1=%s macrotext=%s macrotext1=%s",
             tostring(self.itemID),
@@ -1954,11 +2385,25 @@ local function UpdateButton(button, itemData, yOffset)
     button.itemID = itemData.itemID
     button.bag = itemData.bag
     button.slot = itemData.slot
+    button.requiresEquipToLearn = itemData.requiresEquipToLearn == true
+    button.transmogEquipSlots = itemData.transmogEquipSlots
     button.icon:SetTexture(itemTexture or "Interface\\Icons\\INV_Misc_QuestionMark")
     button.text:SetText(itemName or itemData.itemName)
+    if button.requiresEquipToLearn then
+        button.text:SetTextColor(1, 0.82, 0.2)
+    else
+        button.text:SetTextColor(0, 1, 0.5)
+    end
     
-    -- Prefer exact bag-slot usage when available to mirror manual right-click behavior.
-    if itemData.bag and itemData.slot then
+    -- Equippable transmog items use a swap-back macro to restore the previous gear item.
+    if button.requiresEquipToLearn then
+        button:SetAttribute("type", nil)
+        button:SetAttribute("item", nil)
+        button:SetAttribute("macrotext", nil)
+        button:SetAttribute("type1", "macro")
+        button:SetAttribute("macrotext1", BuildTransmogSwapbackMacroText(itemData.bag, itemData.slot, itemData.transmogEquipSlots))
+        button:SetAttribute("item1", nil)
+    elseif itemData.bag and itemData.slot then
         button:SetAttribute("type", nil)
         button:SetAttribute("item", nil)
         button:SetAttribute("macrotext", nil)
@@ -2151,6 +2596,8 @@ local function Initialize()
             LearnAlertDB[key] = value
         end
     end
+
+    EnsureCustomCurioItemsTable()
     
     -- Create UI
     alertFrame = CreateAlertFrame()
