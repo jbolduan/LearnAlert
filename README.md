@@ -48,8 +48,9 @@ A World of Warcraft addon that opens a clickable list when there are mounts, toy
 ## Installation
 
 1. Download the addon
-2. Extract to: `World of Warcraft\_retail_\Interface\AddOns\LearnAlert`
-3. Restart WoW or type `/reload`
+2. Install the AbstractFramework addon alongside it
+3. Extract to: `World of Warcraft\_retail_\Interface\AddOns\LearnAlert`
+4. Restart WoW or type `/reload`
 
 ## Usage
 

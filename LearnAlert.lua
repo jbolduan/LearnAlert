@@ -6,6 +6,13 @@
 ]]
 
 local addonName, addon = ...
+local AF = rawget(_G, "AbstractFramework")
+
+local function RequireAbstractFramework()
+    if not AF then
+        error("LearnAlert requires AbstractFramework")
+    end
+end
 
 -- Default settings
 local defaults = {
@@ -188,6 +195,10 @@ local ACCOUNTBANK_TAB_LAST = (Enum.BagIndex and Enum.BagIndex.AccountBankTab_5) 
 local alertFrame
 local buttonPool = {}
 local MAX_BUTTONS = 10
+local ALERT_BUTTON_HEIGHT = 26
+local ALERT_ROW_GAP = 0
+local ALERT_TOP_PADDING = 5
+local ALERT_BOTTOM_PADDING = 5
 local LEARNABLE_ITEM_ORDER = { "mounts", "toys", "transmog", "curios", "knowledge", "pets", "decor" }
 local BATTLEPET_CLASS_ID = (Enum and Enum.ItemClass and Enum.ItemClass.Battlepet) or 17
 local WEAPON_CLASS_ID = (Enum and Enum.ItemClass and Enum.ItemClass.Weapon) or 2
@@ -1957,15 +1968,8 @@ local function CreateSettingsPanel()
         helpText:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
         helpText:SetText("Drag an item from your bags onto the drop box to ignore it. Use Remove to restore it.")
 
-        local dropBox = CreateFrame("Button", nil, ignoredPanel, "BackdropTemplate")
-        dropBox:SetSize(320, 38)
+        local dropBox = AF.CreateBorderedFrame(ignoredPanel, nil, 320, 38, "widget", "border")
         dropBox:SetPoint("TOPLEFT", helpText, "BOTTOMLEFT", 0, -10)
-        dropBox:SetBackdrop({
-            bgFile = "Interface\\Buttons\\WHITE8x8",
-            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-            edgeSize = 14,
-            insets = { left = 3, right = 3, top = 3, bottom = 3 },
-        })
         dropBox:SetBackdropColor(0.08, 0.08, 0.08, 0.9)
         dropBox:SetBackdropBorderColor(0.45, 0.45, 0.45, 1)
 
@@ -1977,13 +1981,12 @@ local function CreateSettingsPanel()
         listHeader:SetPoint("TOPLEFT", dropBox, "BOTTOMLEFT", 0, -14)
         listHeader:SetText("Ignored Item List")
 
-        local scrollFrame = CreateFrame("ScrollFrame", nil, ignoredPanel, "UIPanelScrollFrameTemplate")
+        local scrollFrame = AF.CreateScrollFrame(ignoredPanel, nil, 560, 1, "none", "none")
         scrollFrame:SetPoint("TOPLEFT", listHeader, "BOTTOMLEFT", 0, -8)
         scrollFrame:SetPoint("BOTTOMRIGHT", ignoredPanel, "BOTTOMRIGHT", -30, 14)
 
-        local listContent = CreateFrame("Frame", nil, scrollFrame)
-        listContent:SetSize(560, 1)
-        scrollFrame:SetScrollChild(listContent)
+        local listContent = scrollFrame.scrollContent
+        listContent:SetHeight(1)
         scrollFrame:SetScript("OnSizeChanged", function(self, width)
             listContent:SetWidth(math.max(1, width - 26))
         end)
@@ -2010,10 +2013,8 @@ local function CreateSettingsPanel()
             row.text:SetPoint("RIGHT", -70, 0)
             row.text:SetJustifyH("LEFT")
 
-            row.removeButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-            row.removeButton:SetSize(62, 20)
+            row.removeButton = AF.CreateButton(row, "Remove", "red", 62, 20)
             row.removeButton:SetPoint("RIGHT", -2, 0)
-            row.removeButton:SetText("Remove")
             row.removeButton:SetScript("OnClick", function(self)
                 local itemID = self:GetParent().itemID
                 if RemoveIgnoredItem(itemID) then
@@ -2100,15 +2101,8 @@ local function CreateSettingsPanel()
         customHelpText:SetPoint("TOPLEFT", customTitle, "BOTTOMLEFT", 0, -8)
         customHelpText:SetText("Drag an item from your bags onto the drop box to always treat it as a follower curio.")
 
-        local customDropBox = CreateFrame("Button", nil, customCurioPanel, "BackdropTemplate")
-        customDropBox:SetSize(360, 38)
+        local customDropBox = AF.CreateBorderedFrame(customCurioPanel, nil, 360, 38, "widget", "border")
         customDropBox:SetPoint("TOPLEFT", customHelpText, "BOTTOMLEFT", 0, -10)
-        customDropBox:SetBackdrop({
-            bgFile = "Interface\\Buttons\\WHITE8x8",
-            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-            edgeSize = 14,
-            insets = { left = 3, right = 3, top = 3, bottom = 3 },
-        })
         customDropBox:SetBackdropColor(0.08, 0.08, 0.08, 0.9)
         customDropBox:SetBackdropBorderColor(0.45, 0.45, 0.45, 1)
 
@@ -2120,13 +2114,12 @@ local function CreateSettingsPanel()
         customListHeader:SetPoint("TOPLEFT", customDropBox, "BOTTOMLEFT", 0, -14)
         customListHeader:SetText("Custom Curio Item List")
 
-        local customScrollFrame = CreateFrame("ScrollFrame", nil, customCurioPanel, "UIPanelScrollFrameTemplate")
+        local customScrollFrame = AF.CreateScrollFrame(customCurioPanel, nil, 560, 1, "none", "none")
         customScrollFrame:SetPoint("TOPLEFT", customListHeader, "BOTTOMLEFT", 0, -8)
         customScrollFrame:SetPoint("BOTTOMRIGHT", customCurioPanel, "BOTTOMRIGHT", -30, 14)
 
-        local customListContent = CreateFrame("Frame", nil, customScrollFrame)
-        customListContent:SetSize(560, 1)
-        customScrollFrame:SetScrollChild(customListContent)
+        local customListContent = customScrollFrame.scrollContent
+        customListContent:SetHeight(1)
         customScrollFrame:SetScript("OnSizeChanged", function(self, width)
             customListContent:SetWidth(math.max(1, width - 26))
         end)
@@ -2149,10 +2142,8 @@ local function CreateSettingsPanel()
             row.text:SetPoint("RIGHT", -70, 0)
             row.text:SetJustifyH("LEFT")
 
-            row.removeButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-            row.removeButton:SetSize(62, 20)
+            row.removeButton = AF.CreateButton(row, "Remove", "red", 62, 20)
             row.removeButton:SetPoint("RIGHT", -2, 0)
-            row.removeButton:SetText("Remove")
             row.removeButton:SetScript("OnClick", function(self)
                 local itemNameLower = self:GetParent().itemNameLower
                 local displayName = LearnAlertDB
@@ -2243,41 +2234,24 @@ end
 
 -- Create a clickable item button
 local function CreateItemButton(parent, index)
-    local button = CreateFrame("Button", "LearnAlertItemButton" .. index, parent, "SecureActionButtonTemplate, BackdropTemplate")
-    button:SetSize(220, 28)
-    button:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8x8",
-        edgeFile = "Interface\\Buttons\\WHITE8x8",
-        edgeSize = 1,
-    })
-    button:SetBackdropColor(0.1, 0.1, 0.1, 0.8)
-    button:SetBackdropBorderColor(0.3, 0.3, 0.3, 1)
-    
-    -- Icon
+    local button = AF.CreateButton(parent, "", "widget", 230, ALERT_BUTTON_HEIGHT, "SecureActionButtonTemplate")
+    button:SetSize(230, ALERT_BUTTON_HEIGHT)
+    button:SetTextPadding(28)
+    button.text:SetPoint("LEFT", 26, 0)
+    button.text:SetPoint("RIGHT", -5, 0)
+    button.text:SetJustifyH("LEFT")
+    button.text:SetTextColor(0, 1, 0.5)
+
     button.icon = button:CreateTexture(nil, "ARTWORK")
-    button.icon:SetSize(22, 22)
+    button.icon:SetSize(20, 20)
     button.icon:SetPoint("LEFT", 3, 0)
-    
-    -- Cooldown frame (shows GCD)
+
     button.cooldown = CreateFrame("Cooldown", nil, button, "CooldownFrameTemplate")
     button.cooldown:SetAllPoints(button.icon)
     button.cooldown:SetDrawEdge(false)
     button.cooldown:SetDrawSwipe(true)
     button.cooldown:SetSwipeColor(0, 0, 0, 0.7)
-    
-    -- Item name text
-    button.text = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    button.text:SetPoint("LEFT", button.icon, "RIGHT", 5, 0)
-    button.text:SetPoint("RIGHT", -5, 0)
-    button.text:SetJustifyH("LEFT")
-    button.text:SetTextColor(0, 1, 0.5)
-    
-    -- Highlight texture
-    button.highlight = button:CreateTexture(nil, "HIGHLIGHT")
-    button.highlight:SetAllPoints()
-    button.highlight:SetColorTexture(1, 1, 1, 0.1)
-    
-    -- Set up secure attributes for item usage
+
     button:SetAttribute("type", "item")
     button:RegisterForClicks("AnyUp", "AnyDown")
     button:HookScript("PreClick", function(self, mouseButton)
@@ -2379,7 +2353,7 @@ local function CreateItemButton(parent, index)
 end
 
 -- Update a button with item data
-local function UpdateButton(button, itemData, yOffset)
+local function UpdateButton(button, itemData, previousButton)
     local itemName, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(itemData.itemID)
     
     button.itemID = itemData.itemID
@@ -2427,82 +2401,35 @@ local function UpdateButton(button, itemData, yOffset)
         button:SetAttribute("item", nil)
     end
     
-    -- Keep row inset symmetric with the right side (240 frame width - 220 button width = 20 total).
-    button:SetPoint("TOPLEFT", alertFrame, "TOPLEFT", 10, yOffset)
+    -- Keep row inset symmetric with the right side (240 frame width - 230 button width = 10 total = 5px each side).
+    if previousButton then
+        button:SetPoint("TOPLEFT", previousButton, "BOTTOMLEFT", 0, 0)
+    else
+        button:SetPoint("TOPLEFT", alertFrame.header, "BOTTOMLEFT", 5, -10)
+    end
     button:Show()
 end
 
 -- Create the main alert frame
 local function CreateAlertFrame()
-    local frame = CreateFrame("Frame", "LearnAlertFrame", UIParent, "BackdropTemplate")
-    frame:SetSize(240, 150)
+    local frame = AF.CreateHeaderedFrame(UIParent, "LearnAlertFrame", "Learnable Items", 240, 150, "DIALOG")
+    frame:ClearAllPoints()
     frame:SetPoint("CENTER", UIParent, "CENTER", LearnAlertDB.alertX, LearnAlertDB.alertY)
-    frame:SetFrameStrata("DIALOG")
     frame:SetScale(LearnAlertDB.alertScale or 1.0)
-    frame:EnableMouse(true)
-    frame:SetClampedToScreen(true)
-    frame:SetMovable(true)
-    
-    -- Background with border for visibility
-    frame:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8x8",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        edgeSize = 14,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 },
-    })
-    frame:SetBackdropColor(0.05, 0.05, 0.05, 0.95)
-    frame:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
-    
-    -- Title bar
-    local titleBar = CreateFrame("Frame", nil, frame, "BackdropTemplate")
-    titleBar:SetHeight(24)
-    titleBar:SetPoint("TOPLEFT", 0, 0)
-    titleBar:SetPoint("TOPRIGHT", 0, 0)
-    titleBar:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8x8",
-    })
-    titleBar:SetBackdropColor(0.15, 0.4, 0.15, 1)
-    titleBar:EnableMouse(true)
-    titleBar:RegisterForDrag("LeftButton")
-    
-    titleBar:SetScript("OnDragStart", function()
-        frame:StartMoving()
-    end)
-    
-    titleBar:SetScript("OnDragStop", function()
-        frame:StopMovingOrSizing()
-        local point, _, _, x, y = frame:GetPoint()
-        LearnAlertDB.alertX = x
-        LearnAlertDB.alertY = y
-    end)
-    
-    -- Title text
-    local title = titleBar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("LEFT", 8, 0)
-    title:SetText("Learnable Items")
-    title:SetTextColor(1, 1, 1)
-    
-    -- Close button
-    local closeBtn = CreateFrame("Button", nil, titleBar, "UIPanelCloseButton")
-    closeBtn:SetPoint("RIGHT", -3, 0)
-    closeBtn:SetSize(20, 20)
-    closeBtn:SetScript("OnClick", function()
-        HideAlertUntilShown()
+    frame.header:HookScript("OnDragStop", function()
+        local _, _, _, x, y = frame:GetPoint()
+        if x and y then
+            LearnAlertDB.alertX = x
+            LearnAlertDB.alertY = y
+        end
     end)
 
-    -- Hide button (persistent hide until /la show)
-    local hideBtn = CreateFrame("Button", nil, titleBar, "UIPanelButtonTemplate")
-    hideBtn:SetSize(40, 18)
-    hideBtn:SetPoint("RIGHT", closeBtn, "LEFT", -4, 0)
-    hideBtn:SetText("Hide")
-    hideBtn:SetScript("OnClick", function()
+    frame.header.closeBtn:SetScript("OnClick", function()
         HideAlertUntilShown()
     end)
     
-    -- Empty text
-    local emptyText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisable")
-    emptyText:SetPoint("CENTER", frame, "CENTER", 0, 0)
-    emptyText:SetText("No learnable items.")
+    local emptyText = AF.CreateFontString(frame, "No learnable items.", "gray")
+    AF.SetPoint(emptyText, "CENTER")
     emptyText:SetJustifyH("CENTER")
     frame.emptyText = emptyText
     
@@ -2549,7 +2476,7 @@ local function UpdateAlert()
     local allItems = BuildAllItemsList(items)
     
     -- Show buttons for each item
-    local yOffset = -30
+    local previousButton = nil
     local numShown = 0
     for i, itemData in ipairs(allItems) do
         if i > MAX_BUTTONS then break end
@@ -2559,13 +2486,16 @@ local function UpdateAlert()
             buttonPool[i] = CreateItemButton(alertFrame, i)
         end
         
-        UpdateButton(buttonPool[i], itemData, yOffset)
+        UpdateButton(buttonPool[i], itemData, previousButton)
+        previousButton = buttonPool[i]
         numShown = numShown + 1
-        yOffset = yOffset - 32
     end
     
     -- Resize frame based on content
-    alertFrame:SetHeight(38 + (numShown * 32))
+    local headerHeight = (alertFrame.header and alertFrame.header:GetHeight()) or 0
+    local rowsGapHeight = math.max(0, numShown - 1) * ALERT_ROW_GAP
+    local contentHeight = ALERT_TOP_PADDING + (numShown * ALERT_BUTTON_HEIGHT) + rowsGapHeight + ALERT_BOTTOM_PADDING
+    alertFrame:SetHeight(headerHeight + contentHeight)
     RefreshButtonCooldowns()
 end
 
@@ -2586,6 +2516,8 @@ end
 
 -- Initialize addon
 local function Initialize()
+    RequireAbstractFramework()
+
     -- Initialize saved variables
     if not LearnAlertDB then
         LearnAlertDB = {}
@@ -2688,76 +2620,13 @@ local function CreateDebugFrame()
         return debugFrame
     end
     
-    local frame = CreateFrame("Frame", "LearnAlertDebugFrame", UIParent, "BackdropTemplate")
-    frame:SetSize(700, 500)
+    local frame = AF.CreateHeaderedFrame(UIParent, "LearnAlertDebugFrame", "LearnAlert Debug Output", 700, 500, "DIALOG")
+    frame:ClearAllPoints()
     frame:SetPoint("CENTER")
-    frame:SetFrameStrata("DIALOG")
-    frame:EnableMouse(true)
-    frame:SetClampedToScreen(true)
-    frame:SetMovable(true)
     frame:Hide()
-    
-    -- Background
-    frame:SetBackdrop({
-        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        edgeSize = 16,
-        insets = { left = 4, right = 4, top = 4, bottom = 4 },
-    })
-    frame:SetBackdropColor(0, 0, 0, 0.95)
-    
-    -- Title bar
-    local titleBar = CreateFrame("Frame", nil, frame, "BackdropTemplate")
-    titleBar:SetHeight(30)
-    titleBar:SetPoint("TOPLEFT", 0, 0)
-    titleBar:SetPoint("TOPRIGHT", 0, 0)
-    titleBar:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8x8",
-    })
-    titleBar:SetBackdropColor(0.1, 0.5, 0.8, 1)
-    titleBar:EnableMouse(true)
-    titleBar:RegisterForDrag("LeftButton")
-    
-    titleBar:SetScript("OnDragStart", function()
-        frame:StartMoving()
-    end)
-    
-    titleBar:SetScript("OnDragStop", function()
-        frame:StopMovingOrSizing()
-    end)
-    
-    -- Title text
-    local title = titleBar:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("LEFT", 10, 0)
-    title:SetText("LearnAlert Debug Output")
-    title:SetTextColor(1, 1, 1)
-    frame.title = title
-    
-    -- Close button
-    local closeBtn = CreateFrame("Button", nil, titleBar, "UIPanelCloseButton")
-    closeBtn:SetPoint("RIGHT", -5, 0)
-    closeBtn:SetSize(24, 24)
-    closeBtn:SetScript("OnClick", function()
-        frame:Hide()
-    end)
-    
-    -- Scroll frame
-    local scrollFrame = CreateFrame("ScrollFrame", "LearnAlertDebugScrollFrame", frame, "UIPanelScrollFrameTemplate")
-    scrollFrame:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, -40)
-    scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 10)
-    
-    -- Edit box for text content
-    local editBox = CreateFrame("EditBox", nil, scrollFrame)
-    editBox:SetMultiLine(true)
-    editBox:SetWidth(650)
-    editBox:SetHeight(440)
-    editBox:SetFontObject(GameFontWhite)
-    editBox:SetAutoFocus(false)
-    editBox:SetScript("OnEscapePressed", function()
-        frame:Hide()
-    end)
-    scrollFrame:SetScrollChild(editBox)
-    frame.editBox = editBox
+
+    frame.editBox = AF.CreateScrollEditBox(frame, nil, nil, 680, 440)
+    AF.SetPoint(frame.editBox, "TOPLEFT", frame, "TOPLEFT", 10, -40)
     
     debugFrame = frame
     return frame
@@ -2765,7 +2634,7 @@ end
 
 local function ShowDebugWindow(title, text)
     local frame = CreateDebugFrame()
-    frame.title:SetText(title or "LearnAlert Debug Output")
+    frame:SetTitle(title or "LearnAlert Debug Output")
     frame.editBox:SetText(text or "")
     frame.editBox:SetCursorPosition(0)
     frame:Show()
