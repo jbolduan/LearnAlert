@@ -200,6 +200,15 @@ local ALERT_ROW_GAP = 0
 local ALERT_TOP_PADDING = 5
 local ALERT_BOTTOM_PADDING = 5
 local LEARNABLE_ITEM_ORDER = { "mounts", "toys", "transmog", "curios", "knowledge", "pets", "decor" }
+local ITEM_TYPE_ROW_COLORS = {
+    mounts = { 0.10, 0.32, 0.12 },
+    toys = { 0.34, 0.10, 0.34 },
+    transmog = { 0.14, 0.30, 0.14 },
+    curios = { 0.10, 0.30, 0.25 },
+    knowledge = { 0.12, 0.23, 0.34 },
+    pets = { 0.10, 0.28, 0.32 },
+    decor = { 0.34, 0.22, 0.10 },
+}
 local BATTLEPET_CLASS_ID = (Enum and Enum.ItemClass and Enum.ItemClass.Battlepet) or 17
 local WEAPON_CLASS_ID = (Enum and Enum.ItemClass and Enum.ItemClass.Weapon) or 2
 local ARMOR_CLASS_ID = (Enum and Enum.ItemClass and Enum.ItemClass.Armor) or 4
@@ -1765,6 +1774,7 @@ local function BuildAllItemsList(items)
     local allItems = {}
     for _, itemType in ipairs(LEARNABLE_ITEM_ORDER) do
         for _, itemData in ipairs(items[itemType]) do
+            itemData.alertItemType = itemType
             table.insert(allItems, itemData)
         end
     end
@@ -2240,7 +2250,7 @@ local function CreateItemButton(parent, index)
     button.text:SetPoint("LEFT", 26, 0)
     button.text:SetPoint("RIGHT", -5, 0)
     button.text:SetJustifyH("LEFT")
-    button.text:SetTextColor(0, 1, 0.5)
+    button.text:SetTextColor(1, 1, 1)
 
     button.icon = button:CreateTexture(nil, "ARTWORK")
     button.icon:SetSize(20, 20)
@@ -2363,10 +2373,15 @@ local function UpdateButton(button, itemData, previousButton)
     button.transmogEquipSlots = itemData.transmogEquipSlots
     button.icon:SetTexture(itemTexture or "Interface\\Icons\\INV_Misc_QuestionMark")
     button.text:SetText(itemName or itemData.itemName)
-    if button.requiresEquipToLearn then
-        button.text:SetTextColor(1, 0.82, 0.2)
-    else
-        button.text:SetTextColor(0, 1, 0.5)
+    button.text:SetTextColor(1, 1, 1)
+
+    local rowColor = ITEM_TYPE_ROW_COLORS[itemData.alertItemType or itemData.itemType]
+    if button.SetBackdropColor then
+        if rowColor then
+            button:SetBackdropColor(rowColor[1], rowColor[2], rowColor[3], 0.90)
+        else
+            button:SetBackdropColor(0.12, 0.12, 0.12, 0.90)
+        end
     end
     
     -- Equippable transmog items use a swap-back macro to restore the previous gear item.
