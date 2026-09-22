@@ -2428,26 +2428,46 @@ end
 -- Create the main alert frame
 local function CreateAlertFrame()
     local frame = AF.CreateHeaderedFrame(UIParent, "LearnAlertFrame", "Learnable Items", 240, 150, "DIALOG")
-    frame:ClearAllPoints()
-    frame:SetPoint("CENTER", UIParent, "CENTER", LearnAlertDB.alertX, LearnAlertDB.alertY)
     frame:SetScale(LearnAlertDB.alertScale or 1.0)
-    frame.header:HookScript("OnDragStop", function()
-        local _, _, _, x, y = frame:GetPoint()
-        if x and y then
-            LearnAlertDB.alertX = x
-            LearnAlertDB.alertY = y
+
+    -- Anchor by the top-left corner so height changes grow/shrink from the bottom edge.
+    -- Record the anchor through AF too, so AF.RePoint (run on show after a UI scale change) keeps it.
+    local function AnchorTopLeft(left, top)
+        AF.ClearPoints(frame)
+        AF.SetPoint(frame, "TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
+    end
+
+    -- Keep WoW's layout cache from restoring a differently-anchored position after dragging.
+    if frame.SetDontSavePosition then
+        frame:SetDontSavePosition(true)
+    end
+
+    -- Re-anchor to TOPLEFT at the frame's current on-screen spot and remember it.
+    local function SaveTopLeftPosition()
+        local left, top = frame:GetLeft(), frame:GetTop()
+        if left and top then
+            LearnAlertDB.alertLeft = left
+            LearnAlertDB.alertTop = top
+            AnchorTopLeft(left, top)
         end
-    end)
+    end
+
+    if LearnAlertDB.alertLeft and LearnAlertDB.alertTop then
+        AnchorTopLeft(LearnAlertDB.alertLeft, LearnAlertDB.alertTop)
+    else
+        -- Legacy CENTER-relative position. The frame is still hidden so its edges can't be read yet;
+        -- the first UpdateAlert's PinTopLeft converts it to a top-left anchor.
+        frame:ClearAllPoints()
+        frame:SetPoint("CENTER", UIParent, "CENTER", LearnAlertDB.alertX, LearnAlertDB.alertY)
+    end
+
+    frame.header:HookScript("OnDragStop", SaveTopLeftPosition)
+    frame.PinTopLeft = SaveTopLeftPosition
 
     frame.header.closeBtn:SetScript("OnClick", function()
         HideAlertUntilShown()
     end)
-    
-    local emptyText = AF.CreateFontString(frame, "No learnable items.", "gray")
-    AF.SetPoint(emptyText, "CENTER")
-    emptyText:SetJustifyH("CENTER")
-    frame.emptyText = emptyText
-    
+
     frame:Hide()
     return frame
 end
@@ -2484,9 +2504,7 @@ local function UpdateAlert()
         button:Hide()
         button:ClearAllPoints()
     end
-    
-    alertFrame.emptyText:Hide()
-    
+
     -- Combine all learnable items
     local allItems = BuildAllItemsList(items)
     
@@ -2510,7 +2528,11 @@ local function UpdateAlert()
     local headerHeight = (alertFrame.header and alertFrame.header:GetHeight()) or 0
     local rowsGapHeight = math.max(0, numShown - 1) * ALERT_ROW_GAP
     local contentHeight = ALERT_TOP_PADDING + (numShown * ALERT_BUTTON_HEIGHT) + rowsGapHeight + ALERT_BOTTOM_PADDING
-    alertFrame:SetHeight(headerHeight + contentHeight)
+    -- Re-pin the top-left corner first so the height change only moves the bottom edge. This also
+    -- finishes migrating from the legacy CENTER anchor, which can't be read while the frame is hidden.
+    alertFrame:PinTopLeft()
+    -- AF.SetHeight keeps AF's stored height in sync, so AF.ReSize won't snap back to the initial 150.
+    AF.SetHeight(alertFrame, headerHeight + contentHeight)
     RefreshButtonCooldowns()
 end
 
