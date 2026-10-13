@@ -1,8 +1,8 @@
-## Interface: 120100
+## Interface: 120105
 ## Title: LearnAlert
 ## Notes: Displays an alert when there are mounts, toys, transmog items, follower curios, profession knowledge, pets, or decor items in bags/bank
 ## Author: Jeff Bolduan
-## Version: 1.4.5
+## Version: 1.4.6
 ## RequiredDeps: AbstractFramework
 ## SavedVariables: LearnAlertDB
 ## X-Website: https://github.com/jbolduan/LearnAlert
