@@ -265,11 +265,19 @@ end
 petScanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
 genericScanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
 
+local function SafeGetItemCooldown(itemID)
+    if type(GetItemCooldown) == "function" then
+        return GetItemCooldown(itemID)
+    end
+
+    return nil, nil
+end
+
 -- Refresh cooldown overlays for all visible buttons.
 local function RefreshButtonCooldowns()
     for _, button in ipairs(buttonPool) do
         if button:IsShown() and button.itemID and button.cooldown then
-            local startTime, duration = GetItemCooldown(button.itemID)
+            local startTime, duration = SafeGetItemCooldown(button.itemID)
             if startTime and duration and duration > 0 then
                 button.cooldown:SetCooldown(startTime, duration)
             else
@@ -960,12 +968,24 @@ local function GetSpeciesIDFromBagSlot(bag, slot, itemID, itemLink, itemName)
     return nil
 end
 
+local function SafeGetItemInfoInstant(itemID)
+    if type(GetItemInfoInstant) == "function" then
+        return GetItemInfoInstant(itemID)
+    end
+
+    if C_Item and type(C_Item.GetItemInfoInstant) == "function" then
+        return C_Item.GetItemInfoInstant(itemID)
+    end
+
+    return nil, nil, nil, nil, nil, nil
+end
+
 local function IsBattlePetClassItem(itemID)
     if itemID == PET_CAGE_ITEM_ID then
         return true
     end
 
-    local _, _, itemSubType, _, _, classID = GetItemInfoInstant(itemID)
+    local _, _, itemSubType, _, _, classID = SafeGetItemInfoInstant(itemID)
     if classID == BATTLEPET_CLASS_ID then
         return true
     end
@@ -1292,7 +1312,7 @@ local function IsPotentialTransmogItem(itemContext)
         return true
     end
 
-    local _, _, _, _, _, classID = GetItemInfoInstant(itemContext.itemID)
+    local _, _, _, _, _, classID = SafeGetItemInfoInstant(itemContext.itemID)
     return classID == WEAPON_CLASS_ID or classID == ARMOR_CLASS_ID
 end
 
@@ -1581,15 +1601,63 @@ local function IterateBagItems(callback, includeBank)
     end
 end
 
+local function SafeGetItemInfo(itemID)
+    if type(GetItemInfo) == "function" then
+        return GetItemInfo(itemID)
+    end
+
+    if type(GetItemInfoInstant) == "function" then
+        return GetItemInfoInstant(itemID)
+    end
+
+    if C_Item and type(C_Item.GetItemInfoInstant) == "function" then
+        return C_Item.GetItemInfoInstant(itemID)
+    end
+
+    return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+end
+
+local function SafeGetItemIcon(itemID)
+    if type(GetItemIcon) == "function" then
+        return GetItemIcon(itemID)
+    end
+
+    if C_Item and type(C_Item.GetItemIconByID) == "function" then
+        return C_Item.GetItemIconByID(itemID)
+    end
+
+    return nil
+end
+
 local function GetBagItemContext(bag, slot, containerInfo)
     local itemID = containerInfo.itemID
-    local itemName, itemLink, itemRarity, _, _, itemClass, itemSubClass, _, itemEquipLoc, itemTexture = GetItemInfo(itemID)
+    local itemName, itemLink, itemRarity, _, _, itemClass, itemSubClass, _, itemEquipLoc, itemTexture = SafeGetItemInfo(itemID)
+
+    if type(itemName) == "number" and itemName == itemID then
+        itemName = nil
+    end
+    if type(containerInfo.itemName) == "string" and containerInfo.itemName ~= "" then
+        itemName = itemName or containerInfo.itemName
+    end
+    if type(itemLink) ~= "string" or itemLink == "" then
+        itemLink = containerInfo.hyperlink or itemLink
+    end
+    if type(itemName) ~= "string" or itemName == "" then
+        if type(itemLink) == "string" then
+            itemName = itemLink:match("%[(.-)%]") or itemName
+        end
+    end
+    if type(itemTexture) ~= "number" or itemTexture <= 0 then
+        itemTexture = SafeGetItemIcon(itemID) or containerInfo.iconFileID or itemTexture
+    end
     local bagItemLink = C_Container.GetContainerItemLink(bag, slot) or containerInfo.hyperlink or itemLink
 
     if not itemClass or not itemSubClass or IsBattlePetClassItem(itemID) then
         -- Newly acquired items can be uncached for a short time.
         -- Pet-class items also need full spell data for C_PetJournal.GetPetInfoByItemID to resolve species.
-        C_Item.RequestLoadItemDataByID(itemID)
+        if C_Item and type(C_Item.RequestLoadItemDataByID) == "function" then
+            C_Item.RequestLoadItemDataByID(itemID)
+        end
     end
 
     return {
@@ -2362,17 +2430,42 @@ local function CreateItemButton(parent, index)
     return button
 end
 
+local function GetDisplayNameForItem(itemName, itemLink, itemID)
+    if type(itemLink) == "string" and itemLink ~= "" then
+        local linkName = itemLink:match("%[(.-)%]")
+        if linkName and linkName ~= "" then
+            return linkName
+        end
+    end
+
+    if type(itemName) == "string" and itemName ~= "" then
+        return itemName
+    end
+
+    if type(itemName) == "number" and itemName > 0 then
+        return string.format("Item %d", itemName)
+    end
+
+    if type(itemID) == "number" and itemID > 0 then
+        return string.format("Item %d", itemID)
+    end
+
+    return "Unknown item"
+end
+
 -- Update a button with item data
 local function UpdateButton(button, itemData, previousButton)
-    local itemName, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(itemData.itemID)
-    
+    local itemName, _, _, _, _, _, _, _, _, itemTexture = SafeGetItemInfo(itemData.itemID)
+    local displayName = GetDisplayNameForItem(itemName or itemData.itemName, itemData.itemLink, itemData.itemID)
+    local resolvedTexture = itemTexture or itemData.itemTexture or "Interface\\Icons\\INV_Misc_QuestionMark"
+
     button.itemID = itemData.itemID
     button.bag = itemData.bag
     button.slot = itemData.slot
     button.requiresEquipToLearn = itemData.requiresEquipToLearn == true
     button.transmogEquipSlots = itemData.transmogEquipSlots
-    button.icon:SetTexture(itemTexture or "Interface\\Icons\\INV_Misc_QuestionMark")
-    button.text:SetText(itemName or itemData.itemName)
+    button.icon:SetTexture(resolvedTexture)
+    button.text:SetText(displayName)
     button.text:SetTextColor(1, 1, 1)
 
     local rowColor = ITEM_TYPE_ROW_COLORS[itemData.alertItemType or itemData.itemType]
@@ -2754,7 +2847,7 @@ local function DebugPetScan()
         -- For unresolved pet-class items, show per-fallback diagnostics.
         if isPetClass and not speciesID then
             local rawSpeciesFromAPI = C_PetJournal.GetPetInfoByItemID(itemContext.itemID)
-            local _, _, _, _, _, classIDInfo = GetItemInfoInstant(itemContext.itemID)
+            local _, _, _, _, _, classIDInfo = SafeGetItemInfoInstant(itemContext.itemID)
             BuildPetSpeciesNameCache()
             local nameMatchIDs = petSpeciesByNameCache[itemContext.itemName or ""]
             local apiNameMatchIDs = type(rawSpeciesFromAPI) == "string" and petSpeciesByNameCache[rawSpeciesFromAPI]
