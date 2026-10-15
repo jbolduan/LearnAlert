@@ -1778,22 +1778,40 @@ end
 
 -- Determine whether an item is a housing decor item and if it's already known.
 local function IsDecorItem(itemID, itemClass, itemSubClass)
+    local _, instantItemType, instantItemSubType, _, _, classID, subClassID = SafeGetItemInfoInstant(itemID)
+    local normalizedItemClass = type(itemClass) == "string" and string.lower(itemClass) or nil
+    local normalizedItemSubClass = type(itemSubClass) == "string" and string.lower(itemSubClass) or nil
+    local normalizedInstantType = type(instantItemType) == "string" and string.lower(instantItemType) or nil
+    local normalizedInstantSubType = type(instantItemSubType) == "string" and string.lower(instantItemSubType) or nil
+
     -- Housing dyes are consumable colorants, not learnable decor unlocks.
-    if itemSubClass and string.find(string.lower(itemSubClass), "dye", 1, true) then
+    if (normalizedItemSubClass and string.find(normalizedItemSubClass, "dye", 1, true))
+        or (normalizedInstantSubType and string.find(normalizedInstantSubType, "dye", 1, true)) then
         return false
     end
 
-    -- Housing decor items are typically classified as "Miscellaneous" with specific subtypes
-    -- The exact classification may vary by WoW version
-    if itemSubClass == "Housing Decor" or itemSubClass == "Decoration" then
+    -- Retail housing decor currently reports classID 20.
+    if classID == 20 or tonumber(itemClass) == 20 then
         return true
     end
-    
-    -- Some housing items might be in a "Housing" class
-    if itemClass == "Housing" or itemClass == "Decor" then
+
+    -- Housing decor items are typically classified as Housing/Decor/Decoration.
+    if normalizedItemSubClass == "housing decor"
+        or normalizedItemSubClass == "decoration"
+        or normalizedInstantSubType == "housing decor"
+        or normalizedInstantSubType == "decoration"
+        or subClassID == 0 and normalizedInstantType == "housing" then
         return true
     end
-    
+
+    -- Some housing items can come through text class labels instead of class IDs.
+    if normalizedItemClass == "housing"
+        or normalizedItemClass == "decor"
+        or normalizedInstantType == "housing"
+        or normalizedInstantType == "decor" then
+        return true
+    end
+
     return false
 end
 
@@ -3084,6 +3102,7 @@ local function DebugDecor()
 
     IterateBagItems(function(bag, slot, containerInfo)
         local itemContext = GetBagItemContext(bag, slot, containerInfo)
+        local _, instantItemType, instantItemSubType, _, _, classID, subClassID = SafeGetItemInfoInstant(itemContext.itemID)
 
         local isDecorFunction = IsDecorItem(itemContext.itemID, itemContext.itemClass, itemContext.itemSubClass)
         local isDecorKnownValue = GetDecorKnownState(itemContext.itemID)
@@ -3094,6 +3113,11 @@ local function DebugDecor()
 
         table.insert(output, string.format("Bag%d Slot%d: %s (ID:%d)\n", bag, slot, itemContext.itemName or "?", itemContext.itemID))
         table.insert(output, string.format("  Class='%s' SubClass='%s'\n", itemContext.itemClass or "nil", itemContext.itemSubClass or "nil"))
+        table.insert(output, string.format("  InstantType='%s' InstantSubType='%s' ClassID='%s' SubClassID='%s'\n",
+            tostring(instantItemType),
+            tostring(instantItemSubType),
+            tostring(classID),
+            tostring(subClassID)))
         table.insert(output, string.format("  IsDecorItem=%s  IsDecorKnown=%s\n",
             isDecorFunction and "YES" or "NO",
             isDecorKnown))
