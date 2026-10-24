@@ -1099,14 +1099,33 @@ end
 local function IsProfessionKnowledgeTooltipText(textMap)
     local hasKnowledge = false
     local hasUseLine = false
+    local hasProfessionContext = false
 
     for text in pairs(textMap) do
         if string.find(text, "knowledge", 1, true) then
             hasKnowledge = true
         end
 
-        if string.find(text, "use:", 1, true) or string.find(text, "use ", 1, true) then
+        if string.find(text, "use:", 1, true)
+            or string.find(text, "use ", 1, true)
+            or string.find(text, "consume", 1, true)
+            or string.find(text, "read", 1, true)
+            or string.find(text, "study", 1, true) then
             hasUseLine = true
+        end
+
+        if string.find(text, "alchemy", 1, true)
+            or string.find(text, "blacksmithing", 1, true)
+            or string.find(text, "enchanting", 1, true)
+            or string.find(text, "engineering", 1, true)
+            or string.find(text, "herbalism", 1, true)
+            or string.find(text, "inscription", 1, true)
+            or string.find(text, "jewelcrafting", 1, true)
+            or string.find(text, "leatherworking", 1, true)
+            or string.find(text, "mining", 1, true)
+            or string.find(text, "skinning", 1, true)
+            or string.find(text, "tailoring", 1, true) then
+            hasProfessionContext = true
         end
 
         if string.find(text, "study to increase your", 1, true)
@@ -1114,14 +1133,19 @@ local function IsProfessionKnowledgeTooltipText(textMap)
             return true
         end
 
-        -- Fast path: a single line that says "increase your ... knowledge"
-        if string.find(text, "increase your", 1, true)
+        -- Fast path: a single line that says "increase ... knowledge"
+        if string.find(text, "increase", 1, true)
+            and string.find(text, "knowledge", 1, true) then
+            return true
+        end
+
+        if (string.find(text, "gain", 1, true) or string.find(text, "grants", 1, true))
             and string.find(text, "knowledge", 1, true) then
             return true
         end
     end
 
-    return hasKnowledge and hasUseLine
+    return hasKnowledge and (hasUseLine or hasProfessionContext)
 end
 
 local function IsFollowerCurioTooltipText(textMap)
@@ -1157,9 +1181,13 @@ local function IsFollowerCurioItem(itemContext)
         return cachedResult
     end
 
-    local itemClassLower = itemContext.itemClass and string.lower(itemContext.itemClass) or ""
-    local itemSubClassLower = itemContext.itemSubClass and string.lower(itemContext.itemSubClass) or ""
+    local itemClassLower = type(itemContext.itemClass) == "string" and string.lower(itemContext.itemClass) or ""
+    local itemSubClassLower = type(itemContext.itemSubClass) == "string" and string.lower(itemContext.itemSubClass) or ""
     local itemNameLower = itemContext.itemName and string.lower(itemContext.itemName) or ""
+    local itemClassID = tonumber(itemContext.itemClass)
+    local _, instantItemType, instantItemSubType, _, _, instantClassID = SafeGetItemInfoInstant(itemContext.itemID)
+    local instantItemTypeLower = type(instantItemType) == "string" and string.lower(instantItemType) or ""
+    local instantItemSubTypeLower = type(instantItemSubType) == "string" and string.lower(instantItemSubType) or ""
 
     -- Include select repeatable Delves consumables that should be surfaced.
     if itemNameLower ~= "" and IsCustomCurioItemNameTracked(itemNameLower) then
@@ -1169,7 +1197,8 @@ local function IsFollowerCurioItem(itemContext)
 
     -- If the game's own item subclass identifies it as a curio (e.g. "Utility Curio",
     -- "Combat Curio"), that is a definitive signal — no tooltip heuristics needed.
-    if string.find(itemSubClassLower, "curio", 1, true) then
+    if string.find(itemSubClassLower, "curio", 1, true)
+        or string.find(instantItemSubTypeLower, "curio", 1, true) then
         curioItemCacheByID[itemContext.itemID] = true
         return true
     end
@@ -1178,6 +1207,18 @@ local function IsFollowerCurioItem(itemContext)
         itemClassLower == "consumable"
         or itemClassLower == "trade goods"
         or itemClassLower == "miscellaneous"
+        or itemClassID == 0
+        or itemClassID == 5
+        or itemClassID == 7
+        or itemClassID == 15
+        or instantClassID == 0
+        or instantClassID == 5
+        or instantClassID == 7
+        or instantClassID == 15
+        or instantItemTypeLower == "consumable"
+        or instantItemTypeLower == "trade goods"
+        or instantItemTypeLower == "miscellaneous"
+        or instantItemTypeLower == "reagent"
 
     if not isLikelyContainerType
         and not string.find(itemNameLower, "curio", 1, true)
@@ -1231,15 +1272,32 @@ local function IsProfessionKnowledgeItem(itemContext)
         knowledgeItemNegativeCacheExpiresAtByID[itemID] = nil
     end
 
-    local itemClassLower = itemContext.itemClass and string.lower(itemContext.itemClass) or ""
-    local itemSubClassLower = itemContext.itemSubClass and string.lower(itemContext.itemSubClass) or ""
+    local itemClassLower = type(itemContext.itemClass) == "string" and string.lower(itemContext.itemClass) or ""
+    local itemSubClassLower = type(itemContext.itemSubClass) == "string" and string.lower(itemContext.itemSubClass) or ""
     local itemNameLower = itemContext.itemName and string.lower(itemContext.itemName) or ""
+    local itemClassID = tonumber(itemContext.itemClass)
+    local itemSubClassID = tonumber(itemContext.itemSubClass)
+    local _, instantItemType, instantItemSubType, _, _, instantClassID, instantSubClassID = SafeGetItemInfoInstant(itemID)
+    local instantItemTypeLower = type(instantItemType) == "string" and string.lower(instantItemType) or ""
+    local instantItemSubTypeLower = type(instantItemSubType) == "string" and string.lower(instantItemSubType) or ""
 
     local isLikelyContainerType =
         itemClassLower == "consumable"
         or itemClassLower == "trade goods"
         or itemClassLower == "miscellaneous"
         or itemSubClassLower == "finishing reagents"
+        or itemClassID == 0
+        or itemClassID == 7
+        or itemClassID == 15
+        or instantClassID == 0
+        or instantClassID == 7
+        or instantClassID == 15
+        or itemSubClassID == 4
+        or instantSubClassID == 4
+        or instantItemSubTypeLower == "finishing reagents"
+        or instantItemTypeLower == "consumable"
+        or instantItemTypeLower == "trade goods"
+        or instantItemTypeLower == "miscellaneous"
 
     if not isLikelyContainerType and not string.find(itemNameLower, "knowledge", 1, true) then
         -- Do not persist a negative cache entry while metadata is still loading.
@@ -1676,11 +1734,7 @@ local function GetBagItemContext(bag, slot, containerInfo)
 end
 
 local function BuildLearnableMountData(itemContext)
-    if itemContext.itemSubClass ~= "Mount" then
-        return nil
-    end
-
-    local mountID = C_MountJournal.GetMountFromItem(itemContext.itemID)
+    local mountID = C_MountJournal and C_MountJournal.GetMountFromItem and C_MountJournal.GetMountFromItem(itemContext.itemID)
     if not mountID then
         return nil
     end
