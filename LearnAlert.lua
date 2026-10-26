@@ -853,8 +853,10 @@ local function GetSpeciesIDFromLink(itemLink)
 end
 
 local petSpeciesByNameCache = {}
-local hasBuiltFullSpeciesNameCache = false
 local MAX_PET_SPECIES_SCAN_ID = 5000
+local MAX_PET_SPECIES_SCAN_HARD_CAP = 20000
+local PET_SPECIES_SCAN_BATCH_SIZE = 1000
+local highestScannedPetSpeciesID = 0
 
 local function AddSpeciesNameToCache(speciesID, speciesName)
     if not speciesID or not speciesName or speciesName == "" then
@@ -876,19 +878,27 @@ local function AddSpeciesNameToCache(speciesID, speciesName)
     table.insert(list, speciesID)
 end
 
-local function BuildPetSpeciesNameCache()
-    if hasBuiltFullSpeciesNameCache then
+local function ScanPetSpeciesNameRange(startSpeciesID, endSpeciesID)
+    if endSpeciesID < startSpeciesID then
         return
     end
 
-    for speciesID = 1, MAX_PET_SPECIES_SCAN_ID do
+    for speciesID = startSpeciesID, endSpeciesID do
         local speciesName = C_PetJournal.GetPetInfoBySpeciesID(speciesID)
         if speciesName then
             AddSpeciesNameToCache(speciesID, speciesName)
         end
     end
 
-    hasBuiltFullSpeciesNameCache = true
+    highestScannedPetSpeciesID = math.max(highestScannedPetSpeciesID, endSpeciesID)
+end
+
+local function BuildPetSpeciesNameCache()
+    if highestScannedPetSpeciesID >= MAX_PET_SPECIES_SCAN_ID then
+        return
+    end
+
+    ScanPetSpeciesNameRange(highestScannedPetSpeciesID + 1, MAX_PET_SPECIES_SCAN_ID)
 end
 
 local function GetSpeciesIDFromItemName(itemName)
@@ -898,6 +908,15 @@ local function GetSpeciesIDFromItemName(itemName)
 
     BuildPetSpeciesNameCache()
     local speciesIDs = petSpeciesByNameCache[itemName]
+
+    -- Newer expansions can add species IDs above the historical cache range.
+    -- Expand the cache in batches on-demand until the name is found or we hit the hard cap.
+    while (not speciesIDs or #speciesIDs == 0) and highestScannedPetSpeciesID < MAX_PET_SPECIES_SCAN_HARD_CAP do
+        local nextUpperBound = math.min(highestScannedPetSpeciesID + PET_SPECIES_SCAN_BATCH_SIZE, MAX_PET_SPECIES_SCAN_HARD_CAP)
+        ScanPetSpeciesNameRange(highestScannedPetSpeciesID + 1, nextUpperBound)
+        speciesIDs = petSpeciesByNameCache[itemName]
+    end
+
     if not speciesIDs or #speciesIDs == 0 then
         return nil
     end
@@ -1100,6 +1119,7 @@ local function IsProfessionKnowledgeTooltipText(textMap)
     local hasKnowledge = false
     local hasUseLine = false
     local hasProfessionContext = false
+    local hasKnowledgeGrantInstruction = false
 
     for text in pairs(textMap) do
         if string.find(text, "knowledge", 1, true) then
@@ -1124,28 +1144,39 @@ local function IsProfessionKnowledgeTooltipText(textMap)
             or string.find(text, "leatherworking", 1, true)
             or string.find(text, "mining", 1, true)
             or string.find(text, "skinning", 1, true)
-            or string.find(text, "tailoring", 1, true) then
+            or string.find(text, "tailoring", 1, true)
+            or string.find(text, "profession", 1, true) then
             hasProfessionContext = true
         end
 
         if string.find(text, "study to increase your", 1, true)
             and string.find(text, "knowledge", 1, true) then
-            return true
+            hasKnowledgeGrantInstruction = true
         end
 
-        -- Fast path: a single line that says "increase ... knowledge"
-        if string.find(text, "increase", 1, true)
+        -- Knowledge items should explicitly be usable/consumable to avoid
+        -- false-positives on reagents like Artisan's Mettle.
+        local hasInstructionVerb = string.find(text, "use:", 1, true)
+            or string.find(text, "use ", 1, true)
+            or string.find(text, "consume", 1, true)
+            or string.find(text, "read", 1, true)
+            or string.find(text, "study", 1, true)
+
+        -- Fast path: single-line "use/read/study ... knowledge" statements.
+        if hasInstructionVerb
+            and string.find(text, "increase", 1, true)
             and string.find(text, "knowledge", 1, true) then
             return true
         end
 
         if (string.find(text, "gain", 1, true) or string.find(text, "grants", 1, true))
+            and hasInstructionVerb
             and string.find(text, "knowledge", 1, true) then
             return true
         end
     end
 
-    return hasKnowledge and (hasUseLine or hasProfessionContext)
+    return hasKnowledge and hasUseLine and (hasProfessionContext or hasKnowledgeGrantInstruction)
 end
 
 local function IsFollowerCurioTooltipText(textMap)
@@ -1933,7 +1964,7 @@ local function GetUncollectedPetData(bag, slot, itemID, itemLink, itemName, item
         limit = tonumber(limit) or 3
         
         if numOwned < limit then
-            local speciesName, _, speciesIcon = C_PetJournal.GetPetInfoBySpeciesID(speciesID)
+            local speciesName, speciesIcon = C_PetJournal.GetPetInfoBySpeciesID(speciesID)
             return {
                 itemID = itemID,
                 itemName = speciesName or itemName,
@@ -2529,7 +2560,16 @@ end
 local function UpdateButton(button, itemData, previousButton)
     local itemName, _, _, _, _, _, _, _, _, itemTexture = SafeGetItemInfo(itemData.itemID)
     local displayName = GetDisplayNameForItem(itemName or itemData.itemName, itemData.itemLink, itemData.itemID)
-    local resolvedTexture = itemTexture or itemData.itemTexture or "Interface\\Icons\\INV_Misc_QuestionMark"
+    local resolvedTexture
+    if itemData.alertItemType == "pets" then
+        resolvedTexture = itemData.itemTexture or itemTexture
+    else
+        resolvedTexture = itemTexture or itemData.itemTexture
+    end
+    if type(resolvedTexture) ~= "number" and type(resolvedTexture) ~= "string" then
+        resolvedTexture = nil
+    end
+    resolvedTexture = resolvedTexture or "Interface\\Icons\\INV_Misc_QuestionMark"
 
     button.itemID = itemData.itemID
     button.bag = itemData.bag

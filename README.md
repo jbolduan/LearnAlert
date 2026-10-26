@@ -77,7 +77,7 @@ A World of Warcraft addon that opens a clickable list when there are mounts, toy
 - **Transmog**: Equippable armor/weapon items and Ensemble/Arsenal containers with uncollected appearances (based on tooltip transmog state). Clickable transmog gear uses a swap-back flow: LearnAlert equips the item to learn the appearance, then immediately re-equips your previously equipped item in that slot.
 - **Follower Curios**: Follower curio consumables and related items detected from tooltip/use text (includes explicit tracking for Rattling Bag o' Gold)
 - **Profession Knowledge**: Profession knowledge consumables and related items detected from tooltip/use text
-- **Battle Pets**: Any caged battle pet that you haven't collected yet
+- **Battle Pets**: Caged battle pets and other pet-learning items recognized by Pet Journal APIs that you haven't collected yet
 - **Housing Decor**: Any housing decor item (always shown as repeatable)
 
 Housing decor is treated as repeatable content and always appears in LearnAlert when detected in bags/bank.
